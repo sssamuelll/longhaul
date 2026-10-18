@@ -1,0 +1,88 @@
+{
+  "name": "longhaul",
+  "version": "0.1.0",
+  "author": {
+    "name": "Samuel Ballesteros"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/sssamuelll/longhaul",
+  "homepage": "https://github.com/sssamuelll/longhaul",
+  "description": "Makes your Claude Code week last: compacts between tasks, hands plan steps to Sonnet, shows the pace you can afford.",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "guard_mode": {
+      "type": "string",
+      "title": "Guard mode",
+      "description": "Compacts the conversation between tasks once it passes the soft limit, and at the end of a turn once it passes the hard limit. auto acts, ask asks first, off does nothing.",
+      "default": "auto",
+      "options": [
+        "auto",
+        "ask",
+        "off"
+      ]
+    },
+    "classifier_mode": {
+      "type": "string",
+      "title": "Classifier mode",
+      "description": "Hands execution work (plan steps, mechanical edits, searches) to a Sonnet subagent and has Opus review the result. auto acts, ask has Claude ask first, off does nothing.",
+      "default": "auto",
+      "options": [
+        "auto",
+        "ask",
+        "off"
+      ]
+    },
+    "budget_mode": {
+      "type": "string",
+      "title": "Budget mode",
+      "description": "The meter above the prompt: context size, weekly use, and today against the pace that lasts until the reset. auto shows it, off hides it.",
+      "default": "auto",
+      "options": [
+        "auto",
+        "off"
+      ]
+    },
+    "health_mode": {
+      "type": "string",
+      "title": "Health mode",
+      "description": "Checks once per session what every session loads before any work (MCP tools, memory files, skills) and mentions it above the prompt at most once a week. /longhaul health always works. auto shows the heads-up, off hides it.",
+      "default": "auto",
+      "options": [
+        "auto",
+        "off"
+      ]
+    },
+    "soft_limit": {
+      "type": "number",
+      "title": "Soft limit (tokens)",
+      "description": "Context size, in tokens, after which the guard compacts at the next safe moment between tasks.",
+      "default": 150000,
+      "min": 100000,
+      "max": 1000000
+    },
+    "hard_limit": {
+      "type": "number",
+      "title": "Hard limit (tokens)",
+      "description": "Context size, in tokens, after which the guard compacts at the end of the turn, even mid-task. Must be higher than the soft limit.",
+      "default": 300000,
+      "min": 100000,
+      "max": 1000000
+    },
+    "explore_model": {
+      "type": "string",
+      "title": "Explore model",
+      "description": "Model that exploration steps are handed to.",
+      "default": "sonnet",
+      "options": [
+        "sonnet",
+        "haiku"
+      ]
+    },
+    "keep_on_opus": {
+      "type": "string",
+      "title": "Keep on Opus",
+      "description": "Comma-separated agent-type name fragments that stay on Opus.",
+      "default": "review,design,plan,architect"
+    }
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "name": "longhaul",
+  "owner": { "name": "Samuel Ballesteros" },
+  "plugins": [{ "name": "longhaul", "source": "./" }]
+}
