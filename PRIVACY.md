@@ -5,6 +5,7 @@ longhaul runs entirely on your machine. It makes no network calls, sends no tele
 ## What it reads
 
 - **Your prompts**, as you send them, to match them against the classifier rules. The text is read in memory and never kept.
+- **The tool calls in your session**: for an edit, the file path; for a shell command, the command text, checked in memory for a commit or a test run and never kept; for a todo list, whether every item is done; for an MCP tool, the server's name, to count its calls.
 - **Session usage that Claude Code reports**: context size, token counts, the weekly limit percentage and its reset time.
 - **The context breakdown that Claude Code reports**: which MCP tools are loaded and how many tokens each takes, the memory files it loaded and the number of skills.
 - **Those memory files**, to count their lines and find long lines repeated across them. Their contents are not kept.
