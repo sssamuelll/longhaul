@@ -63,7 +63,7 @@ Five jobs. The guard and classifier have three modes each: `auto` acts, `ask` as
 
 ## Privacy
 
-Everything stays on your machine. The mod makes no network calls and sends no telemetry. The decision log never stores prompt text. Data lives in `<CLAUDE_CONFIG_DIR or ~/.claude>/longhaul/`.
+Everything stays on your machine. The mod makes no network calls and sends no telemetry. The decision log never stores prompt text. Data lives in `<CLAUDE_CONFIG_DIR or ~/.claude>/longhaul/`. [PRIVACY.md](PRIVACY.md) lists everything it reads and writes.
 
 ## What it can't do
 
