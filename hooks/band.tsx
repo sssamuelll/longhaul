@@ -1,5 +1,5 @@
 import { atom, read } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, MatchedHook } from 'claude-code'
 import type { BandEvent, Meter } from '../types/index'
 import { setEvent, compactNow, declineAsk } from './compact'
 import { fail } from './session'
@@ -77,52 +77,50 @@ function eventText(ev: Exclude<BandEvent, { kind: 'ask-compact' }>): string {
 }
 
 // The band: the latest event in calm grey, and under it, right above the prompt, the meter row.
-export const registerBand: Register = (on) => {
-  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (e.props.hasSurvey) return next(e)
-    const ev = await read($, eventAtom)
-    const m = await read($, meterAtom)
-    const { Box, Button, Text } = $.ui.resolve(e)
-    const rows = []
-    if (ev && ev.kind !== 'ask-compact') rows.push(<Text dimColor>{eventText(ev)}</Text>)
-    else if (ev?.kind === 'ask-compact' && !e.props.isWorking)
-      // the ask waits for an idle prompt
-      rows.push(
-        <Box>
-          <Text dimColor>{`a good moment to compact${SEP}keeps the plan, decisions and open items `}</Text>
-          <Button
-            key="compact"
-            label="Compact now"
-            onPress={async () => {
-              try {
-                await compactNow($, 'button')
-                if ((await read($, eventAtom))?.kind === 'ask-compact') await setEvent($, null)
-              } catch (err) {
-                fail($, 'compact from band', err)
-              }
-            }}
-          />
-          <Button
-            key="later"
-            label="Not now"
-            onPress={async () => {
-              declineAsk(ev.hard)
-              await setEvent($, null)
-            }}
-          />
-        </Box>,
-      )
-    if (m)
-      rows.push(
-        <Text wrap="truncate-end">
-          {meterSegs(m, e.props.bodyColumns ?? 120).map((s) => (
-            <Text {...(s.color ? { color: s.color } : {})} {...(s.dim ? { dimColor: true } : {})}>
-              {s.text}
-            </Text>
-          ))}
-        </Text>,
-      )
-    if (!rows.length) return next(e)
-    return <Box flexDirection="column">{rows}</Box>
-  })
+export const renderBand: MatchedHook<'ui.render', { component: 'AbovePrompt' }> = async ($, e, next) => {
+  if (e.props.hasSurvey) return next(e)
+  const ev = await read($, eventAtom)
+  const m = await read($, meterAtom)
+  const { Box, Button, Text } = $.ui.resolve(e)
+  const rows = []
+  if (ev && ev.kind !== 'ask-compact') rows.push(<Text dimColor>{eventText(ev)}</Text>)
+  else if (ev?.kind === 'ask-compact' && !e.props.isWorking)
+    // the ask waits for an idle prompt
+    rows.push(
+      <Box>
+        <Text dimColor>{`a good moment to compact${SEP}keeps the plan, decisions and open items `}</Text>
+        <Button
+          key="compact"
+          label="Compact now"
+          onPress={async () => {
+            try {
+              await compactNow($, 'button')
+              if ((await read($, eventAtom))?.kind === 'ask-compact') await setEvent($, null)
+            } catch (err) {
+              fail($, 'compact from band', err)
+            }
+          }}
+        />
+        <Button
+          key="later"
+          label="Not now"
+          onPress={async () => {
+            declineAsk(ev.hard)
+            await setEvent($, null)
+          }}
+        />
+      </Box>,
+    )
+  if (m)
+    rows.push(
+      <Text wrap="truncate-end">
+        {meterSegs(m, e.props.bodyColumns ?? 120).map((s) => (
+          <Text {...(s.color ? { color: s.color } : {})} {...(s.dim ? { dimColor: true } : {})}>
+            {s.text}
+          </Text>
+        ))}
+      </Text>,
+    )
+  if (!rows.length) return next(e)
+  return <Box flexDirection="column">{rows}</Box>
 }
