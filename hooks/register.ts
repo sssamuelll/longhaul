@@ -6,7 +6,7 @@ import { current, fail, lastMainCtx, setMainCtx, setCompactPending, isCompactPen
 import { emptyFacts, observeTool, isTaskDone, isNewTask, guardDecision, type TurnFacts } from './guard'
 import { addStep, saveRecord, type CompactReason } from './ledger'
 import { budgetAfterTurn } from './budget'
-import { registerBand, clearBandOnPrompt } from './band'
+import { renderBand, clearBandOnPrompt } from './band'
 import { registerReport, runReport } from './report'
 import { healthAfterFirstTurn, runHealth } from './health'
 import { handoffContext, noteEdit, applyReview, registerReview, resetHandoff, routeSubagent, REVIEW_TOOL } from './handoff'
@@ -116,7 +116,7 @@ export const register: Register = (on, options) => {
   const cfg = readConfig(options)
   setSoftLimit(cfg.softLimit)
 
-  registerBand(on, options)
+  on('ui.render', { component: 'AbovePrompt' }, renderBand)
 
   on('turn.step', async function* ($, e, next) {
     const r = yield* next(e)

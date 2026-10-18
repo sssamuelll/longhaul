@@ -61,6 +61,17 @@ Five jobs. The guard and classifier have three modes each: `auto` acts, `ask` as
 - `/longhaul page` writes a local HTML page and opens it in the browser.
 - `/longhaul health` shows what every session loads before any work.
 
+## What it changes, sends, runs and writes
+
+- **Prompts.** When a classifier rule matches and the main session runs on Opus or Fable, the mod adds one note to the prompt's context; your text is not changed. In `auto` the note reads: "longhaul: this looks like execution work. Delegate it to a Sonnet subagent with a short brief (goal, files, how to check it). Review its changes and test results before accepting, then call mcp__longhaul__review with accepted, fixed or redone." In `ask` it tells Claude to ask you first. When a new task starts past the soft limit in an interactive session, the prompt is held, the conversation compacts, and the mod submits the same text again, unchanged. If that fails, it puts the text back in the prompt box.
+- **Subagents.** The `agent.spawn` hook sets the model of the built-in general-purpose and Explore subagents to Sonnet (Explore to `explore_model`) when the main session runs on Opus or Fable and the spawn names no model. Forks, spawns that name a model and agent types that match `keep_on_opus` pass unchanged. It never changes an agent's permission mode.
+- **Compaction.** The `session.compact` hook adds the keep-list after your own compaction instructions: "Keep, in this order: the current plan and its next step; the decisions made and why; the files touched; open items and failing tests; anything the user corrected or asked for in this session."
+- **The band.** The `ui.render` hook draws the meter and its notes above the prompt. With nothing to show, Claude Code draws its own.
+- **Everything else only observes.** The `tool.call`, `turn.step`, `turn.complete`, `session.start` and `session.end` hooks pass every event on unchanged. They count tokens, compactions and MCP calls, and note which files were edited. `command.run` answers only `/longhaul`, and the `review` tool records how a handoff went.
+- **Sends.** Nothing leaves your machine: no network calls, no telemetry. The resubmitted prompt, the note and the keep-list reach Claude through Claude Code, like your own prompts.
+- **Runs.** Only your system's file opener (`explorer.exe` on Windows, `open` on macOS, `xdg-open` on Linux), to show the local report page when you run `/longhaul page`.
+- **Writes.** Only inside `<CLAUDE_CONFIG_DIR or ~/.claude>/longhaul/`: one JSON record per session, `rules.json`, and `report.html` for `/longhaul page`. Plus a few dates in Claude Code's plugin storage, so a heads-up shows at most once a day or once a week. It never edits build, start-up, settings or instructions files.
+
 ## Privacy
 
 Everything stays on your machine. The mod makes no network calls and sends no telemetry. The decision log never stores prompt text. Data lives in `<CLAUDE_CONFIG_DIR or ~/.claude>/longhaul/`. [PRIVACY.md](PRIVACY.md) lists everything it reads and writes.

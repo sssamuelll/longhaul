@@ -312,15 +312,16 @@ async function open($: EngineInterface, path: string): Promise<boolean> {
       return false
     }
   }
-  const tries: string[][] = [['open', path], ['xdg-open', path]]
-  for (const argv of tries) {
-    try {
-      if ((await $.process.run(argv)).exitCode === 0) return true
-    } catch {
-      // try the next opener
-    }
+  try {
+    if ((await $.process.run(['open', path])).exitCode === 0) return true // macOS
+  } catch {
+    // not macOS: try xdg-open
   }
-  return false
+  try {
+    return (await $.process.run(['xdg-open', path])).exitCode === 0
+  } catch {
+    return false
+  }
 }
 
 export async function runReport($: EngineInterface, cfg: Config, args: string): Promise<{ text: string }> {
