@@ -1,7 +1,7 @@
 import { test, expect } from 'claude-code/testing'
-import type { EngineInterface } from 'claude-code'
 import { classify } from './classifier'
-import { DEFAULT_RULES, loadRules, resetRulesWarn } from './rules'
+import { DEFAULT_RULES } from './rules'
+import { HANDOFF } from './handoff'
 
 const table: [string, string][] = [
   ['run the tests and fix the lint errors', 'sonnet'],
@@ -50,55 +50,77 @@ test('an invalid user rule is skipped, not thrown', async () => {
   expect(r.ruleIds).toEqual(['ok'])
 })
 
-function fake(files: Record<string, string> = {}) {
-  const logs: string[] = []
-  const $ = {
-    env: { get: async (n: string) => ({ CLAUDE_CONFIG_DIR: '/cfg' } as Record<string, string>)[n] },
-    fs: {
-      read: async (p: string) => {
-        if (!(p in files)) throw new Error('ENOENT')
-        return files[p]
-      },
-      exists: async (p: string) => p in files,
-      write: async (p: string, t: string) => void (files[p] = t),
-    },
-    ui: { log: (t: string) => void logs.push(t) },
-  }
-  return { $: $ as unknown as EngineInterface, files, logs }
-}
-const FILE = '/cfg/longhaul/rules.json'
+// The rules file is read through the engine, which normalises the path per platform.
+const norm = (p: string): string => p.replace(/\\/g, '/').replace(/^[A-Za-z]:/, '')
+const FILE = '/r/rules.json'
+const opts = { options: { rules_file: FILE } }
 
-test('loadRules creates a missing file from the defaults', async () => {
-  const { $, files } = fake()
-  expect(await loadRules($)).toEqual(DEFAULT_RULES)
-  expect(JSON.parse(files[FILE])).toEqual(DEFAULT_RULES)
-})
-test('loadRules falls back on invalid JSON without overwriting', async () => {
-  resetRulesWarn()
-  const { $, files, logs } = fake({ [FILE]: '[{' })
-  expect(await loadRules($)).toEqual(DEFAULT_RULES)
-  expect(files[FILE]).toBe('[{')
-  expect(logs.length).toBe(1)
-})
-test('loadRules falls back when the JSON is not an array', async () => {
-  const { $, files } = fake({ [FILE]: '{"a":1}' })
-  expect(await loadRules($)).toEqual(DEFAULT_RULES)
-  expect(files[FILE]).toBe('{"a":1}')
-})
-test('loadRules keeps valid entries and drops malformed ones', async () => {
-  const good = { id: 'u.x', verdict: 'opus', pattern: 'foo' }
-  const { $ } = fake({
-    [FILE]: JSON.stringify([good, { id: 'a', verdict: 'neutral', pattern: 'x' }, { verdict: 'opus', pattern: 'x' }, { id: 'b', verdict: 'opus', pattern: '(' }, 7]),
+function stub(on: any, files: Record<string, string | Error>) {
+  const logs: string[] = []
+  const sent: any[] = []
+  const reads: string[] = []
+  on('session.id', async () => ({ value: 'c1' }))
+  on('session.cwd', async () => ({ value: '/w/p' }))
+  on('session.model', async () => ({ value: 'claude-opus-5-5' }))
+  on('session.start', async () => ({ cwd: '/w/p' }))
+  on('clock.now', async () => ({ value: 1_760_000_000_000 }))
+  on('fs.read', async (_$: any, e: any) => {
+    const f = files[norm(e.path)]
+    reads.push(norm(e.path))
+    return typeof f === 'string' ? { value: f } : { deny: 'ENOENT' }
   })
-  expect(await loadRules($)).toEqual([good])
+  on('store.get', async () => ({ value: undefined }))
+  on('store.set', async () => ({ value: undefined }))
+  on('state.get', async () => ({ value: { value: undefined, version: 0 } as never }))
+  on('state.set', async () => ({ value: { isSet: true, version: 1 } as never }))
+  on('ui.log', async (_$: any, e: any) => (logs.push(JSON.stringify(e)), { value: undefined }))
+  on('tool.register', async () => ({ value: undefined }) as never)
+  on('command.register', async () => ({ value: undefined }) as never)
+  on('ui.status', async () => ({ value: undefined }))
+  on('prompt.submit', async (_$: any, e: any) => (sent.push(e), { text: e.text, context: e.context }))
+  return { logs, sent, reads }
+}
+const start = ($: any) => $.session.start({ cwd: '/w/p', surface: null, isInteractive: true })
+const warnings = (logs: string[]) => logs.filter((l) => l.includes('rules file'))
+
+test('rules_file keeps valid entries and drops malformed ones', opts, async ($, on) => {
+  const good = { id: 'u.x', verdict: 'sonnet', pattern: 'zebra' }
+  const s = stub(on, {
+    [FILE]: JSON.stringify([good, { id: 'a', verdict: 'neutral', pattern: 'x' }, { verdict: 'sonnet', pattern: 'x' }, { id: 'b', verdict: 'sonnet', pattern: '(' }, 7]),
+  })
+  await start($)
+  await $.prompt.submit({ text: 'paint the zebra' })
+  await $.prompt.submit({ text: 'find the login handler' }) // a built-in rule, replaced by the file
+  expect(s.sent[0].context).toContain(HANDOFF)
+  expect(s.sent[1].context).toBe(undefined)
+  expect(warnings(s.logs)).toEqual([])
 })
-test('a read error on an existing file never triggers a write', async () => {
-  const { $, files } = fake({ [FILE]: '[]' })
-  let wrote = false
-  const fs = ($ as unknown as { fs: { read: unknown; write: unknown } }).fs
-  fs.read = async () => { throw new Error('EBUSY') }
-  fs.write = async () => void (wrote = true)
-  expect(await loadRules($)).toEqual(DEFAULT_RULES)
-  expect(wrote).toBe(false)
-  expect(files[FILE]).toBe('[]')
+test('a rules file with invalid JSON falls back to the built-in rules with one warning', opts, async ($, on) => {
+  const s = stub(on, { [FILE]: '[{' })
+  await start($)
+  await $.prompt.submit({ text: 'find the login handler' })
+  await $.prompt.submit({ text: 'find the login handler again' })
+  expect(s.sent[0].context).toContain(HANDOFF)
+  expect(warnings(s.logs).length).toBe(1)
+})
+test('a rules file that is not an array falls back to the built-in rules', opts, async ($, on) => {
+  const s = stub(on, { [FILE]: '{"a":1}' })
+  await start($)
+  await $.prompt.submit({ text: 'find the login handler' })
+  expect(s.sent[0].context).toContain(HANDOFF)
+  expect(warnings(s.logs).length).toBe(1)
+})
+test('a missing rules file falls back to the built-in rules with one warning', opts, async ($, on) => {
+  const s = stub(on, {})
+  await start($)
+  await $.prompt.submit({ text: 'find the login handler' })
+  expect(s.sent[0].context).toContain(HANDOFF)
+  expect(warnings(s.logs).length).toBe(1)
+})
+test('no rules_file: the built-in rules, and no file is read', async ($, on) => {
+  const s = stub(on, {})
+  await start($)
+  await $.prompt.submit({ text: 'find the login handler' })
+  expect(s.sent[0].context).toContain(HANDOFF)
+  expect(s.reads).toEqual([])
 })

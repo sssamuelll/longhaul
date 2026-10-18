@@ -1,6 +1,6 @@
 {
   "name": "longhaul",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": {
     "name": "Samuel Ballesteros"
   },
@@ -77,21 +77,11 @@
       "min": 100000,
       "max": 1000000
     },
-    "explore_model": {
+    "rules_file": {
       "type": "string",
-      "title": "Explore model",
-      "description": "Model that exploration steps are handed to.",
-      "default": "sonnet",
-      "options": [
-        "sonnet",
-        "haiku"
-      ]
-    },
-    "keep_on_opus": {
-      "type": "string",
-      "title": "Keep on Opus",
-      "description": "Comma-separated agent-type name fragments that stay on Opus.",
-      "default": "review,design,plan,architect"
+      "title": "Rules file",
+      "description": "Absolute path to a JSON file of classifier rules that replaces the built-in ones. Empty uses the built-in rules.",
+      "default": ""
     }
   }
 }

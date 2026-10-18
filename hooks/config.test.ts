@@ -5,8 +5,7 @@ test('defaults', async () => {
   expect(readConfig({})).toEqual({
     guardMode: 'auto', classifierMode: 'auto', budgetMode: 'auto',
     healthMode: 'auto',
-    softLimit: 150000, hardLimit: 300000, exploreModel: 'sonnet',
-    keepOnOpus: ['review', 'design', 'plan', 'architect'],
+    softLimit: 150000, hardLimit: 300000, rulesFile: '',
   })
 })
 test('soft limit is clamped', async () => {
@@ -18,7 +17,10 @@ test('hard limit must exceed soft', async () => {
   expect(readConfig({ hard_limit: 120000, soft_limit: 400000 }).hardLimit).toBe(450000)
   expect(readConfig({ hard_limit: 900000, soft_limit: 1000000 }).hardLimit).toBe(1000000)
 })
-test('bad mode falls back, keep_on_opus is trimmed', async () => {
+test('bad mode falls back', async () => {
   expect(readConfig({ guard_mode: 'loud' }).guardMode).toBe('auto')
-  expect(readConfig({ keep_on_opus: ' Review, plan ,,' }).keepOnOpus).toEqual(['review', 'plan'])
+})
+test('rules_file is a trimmed string, empty when unset or not a string', async () => {
+  expect(readConfig({ rules_file: ' /r/rules.json ' }).rulesFile).toBe('/r/rules.json')
+  expect(readConfig({ rules_file: 7 }).rulesFile).toBe('')
 })

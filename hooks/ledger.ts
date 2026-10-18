@@ -1,4 +1,4 @@
-import type { EngineInterface, ModelUsage } from 'claude-code'
+import type { ModelUsage } from 'claude-code'
 import type { BaseSnapshot } from './health'
 import { stepCost, contextOf, bucketOf, type StepCost, type Bucket } from './prices'
 
@@ -84,29 +84,11 @@ export function addStep(rec: SessionRecord, model: string, u: ModelUsage, isSub:
   if (c) rec.byBucket[bucketOf(ctx)] += totalCost(c)
 }
 
-// On Windows USERPROFILE is the profile folder; HOME is only set by some shells and may point elsewhere.
-async function home($: EngineInterface): Promise<string | undefined> {
-  const profile = await $.env.get('USERPROFILE')
-  const home = await $.env.get('HOME')
-  return (await $.env.get('OS')) === 'Windows_NT' ? (profile ?? home) : (home ?? profile)
-}
-
-export async function dataDir($: EngineInterface): Promise<string> {
-  const base =
-    (await $.env.get('CLAUDE_CONFIG_DIR')) ??
-    `${(await home($)) ?? '.'}/.claude`
-  return `${base.replace(/[\\/]+$/, '')}/longhaul`
-}
-
 export const projectOf = (cwd: string): string => cwd.split(/[\\/]/).filter(Boolean).pop() ?? ''
 
-async function fileOf($: EngineInterface, id: string): Promise<string> {
-  return `${await dataDir($)}/sessions/${id}.json`
-}
-
-function parse(text: string, fresh: SessionRecord): SessionRecord | null {
+export function parse(stored: unknown, fresh: SessionRecord): SessionRecord | null {
   try {
-    const p = JSON.parse(text)
+    const p = typeof stored === 'string' ? JSON.parse(stored) : stored
     if (!p || p.v !== 1 || typeof p.id !== 'string') return null
     return {
       ...fresh,
@@ -124,47 +106,17 @@ function parse(text: string, fresh: SessionRecord): SessionRecord | null {
   }
 }
 
-export async function loadRecord($: EngineInterface, id: string, project: string, now: number): Promise<SessionRecord> {
-  const fresh = newRecord(id, project, now)
-  try {
-    const text = await $.fs.read(await fileOf($, id))
-    return (typeof text === 'string' && parse(text, fresh)) || fresh
-  } catch {
-    return fresh
-  }
-}
-
 export const MAX_RATE = 2000
 export const MAX_DECISIONS = 500
 export const MAX_COMPACTION_LOG = 200
 
-// fs writes are capped at 4 MiB: keep the newest points of the unbounded lists.
-export async function saveRecord($: EngineInterface, rec: SessionRecord): Promise<void> {
+export const SESSION_PREFIX = 'session:'
+
+// The store is capped at 4 MiB: keep the newest points of the unbounded lists.
+export function capRecord(rec: SessionRecord): void {
   rec.rate = rec.rate.slice(-MAX_RATE)
   rec.decisions = rec.decisions.slice(-MAX_DECISIONS)
   rec.compactionLog = rec.compactionLog.slice(-MAX_COMPACTION_LOG)
-  await $.fs.write(await fileOf($, rec.id), JSON.stringify(rec))
 }
 
-export async function listRecords($: EngineInterface, sinceMs: number): Promise<SessionRecord[]> {
-  const dir = `${await dataDir($)}/sessions`
-  let entries
-  try {
-    entries = await $.fs.list(dir)
-  } catch {
-    return []
-  }
-  const out: SessionRecord[] = []
-  for (const e of entries) {
-    if (e.kind !== 'file' || !e.name.endsWith('.json')) continue
-    if (e.mtimeMs && e.mtimeMs < sinceMs) continue // last write is never before the last rate point
-    try {
-      const text = await $.fs.read(`${dir}/${e.name}`)
-      const rec = typeof text === 'string' ? parse(text, newRecord('', '', 0)) : null
-      if (rec && Math.max(rec.startedAt, rec.rate.at(-1)?.[0] ?? 0) >= sinceMs) out.push(rec)
-    } catch {
-      // unreadable file: skip it
-    }
-  }
-  return out
-}
+export const lastActivity = (rec: SessionRecord): number => Math.max(rec.startedAt, rec.rate.at(-1)?.[0] ?? 0)

@@ -1,22 +1,17 @@
-import type { EngineInterface } from 'claude-code'
-import type { Config } from './config'
-import { setEvent } from './compact'
-import { eventIsEmpty } from './band'
-import { current, fail } from './session'
-import { listRecords, saveRecord, type SessionRecord } from './ledger'
-import { windowOf } from './report'
-import { localDate, NOTICE_MCP } from './budget'
+import type { SessionUsage } from 'claude-code'
+import type { SessionRecord } from './ledger'
+import { localDate } from './budget'
 
 const DAY = 86_400_000
 const MIN_LINE = 40 // characters, after trimming and collapsing whitespace
-const MAX_FILE = 1_000_000 // characters; a bigger memory file is counted by the breakdown but not scanned
+export const MAX_FILE = 1_000_000 // characters; a bigger memory file is counted by the breakdown but not scanned
 const BIG_FILE_LINES = 200
 const BIG_FILE_TOKENS = 3000
-const DUP_TOKENS = 500
-const NOTICE_TOTAL = 60_000
+export const DUP_TOKENS = 500
+export const NOTICE_TOTAL = 60_000
 const MIN_HISTORY = 3 * DAY // the mod's records must reach back this far before a server counts as unused
-const WIRE = /^mcp__(.+?)__/ // same key as the call counts in register.ts
-const NOTICE_EVERY = 7 * DAY
+const WIRE = /^mcp__(.+?)__/ // same key as the call counts in register.tsx
+export const NOTICE_EVERY = 7 * DAY
 
 export type BaseSnapshot = {
   at: number
@@ -58,10 +53,11 @@ export function findDuplicates(files: { path: string; text: string }[]): BaseSna
   return { lines, tokens: Math.round(chars / 4), files: files.map((f) => f.path).filter((p) => paths.has(p)) }
 }
 
-// The free local estimate of what a session loads before any work. Null when there is none.
-export async function takeSnapshot($: EngineInterface): Promise<BaseSnapshot | null> {
-  const b = (await $.session.usage({ breakdown: 'summary' }))?.context?.breakdown
-  if (!b) return null
+type Breakdown = NonNullable<NonNullable<SessionUsage['context']>['breakdown']>
+
+// The local estimate of what a session loads before any work, from the usage breakdown and the text of
+// each memory file (absent when it could not be read).
+export function snapshotOf(b: Breakdown, texts: Map<string, string>, at: number): BaseSnapshot {
   const mcp: BaseSnapshot['mcp'] = {}
   for (const t of b.mcpTools ?? []) {
     const key = WIRE.exec(t.name)?.[1] ?? t.serverName
@@ -71,36 +67,32 @@ export async function takeSnapshot($: EngineInterface): Promise<BaseSnapshot | n
     s.tokens += t.tokens
   }
   const memory: BaseSnapshot['memory'] = []
-  const texts: { path: string; text: string }[] = []
+  const scanned: { path: string; text: string }[] = []
   for (const m of b.memoryFiles ?? []) {
     if (memory.some((x) => x.path === m.path)) continue
     let lines: number | undefined
-    try {
-      const text = await $.fs.read(m.path)
-      if (typeof text === 'string' && text.length <= MAX_FILE) {
-        const rows = text.split('\n')
-        if (rows.at(-1) === '') rows.pop() // a trailing newline is not a line
-        lines = rows.length
-        texts.push({ path: m.path, text })
-      }
-    } catch {
-      // unreadable: counted by the breakdown, not scanned
+    const text = texts.get(m.path)
+    if (text !== undefined && text.length <= MAX_FILE) {
+      const rows = text.split('\n')
+      if (rows.at(-1) === '') rows.pop() // a trailing newline is not a line
+      lines = rows.length
+      scanned.push({ path: m.path, text })
     }
     memory.push({ path: m.path, tokens: m.tokens, ...(lines === undefined ? {} : { lines }), ...(m.type ? { type: m.type } : {}) })
   }
   const messages = (b.categories ?? []).find((c) => c.name === 'Messages')?.tokens
   return {
-    at: await $.clock.now(),
+    at,
     total: messages === undefined ? b.totalTokens : Math.max(0, b.totalTokens - messages),
     ...(messages === undefined ? { afterFirstReply: true as const } : {}),
     mcp,
     memory,
     skills: { count: b.skills?.totalSkills ?? 0, tokens: b.skills?.tokens ?? 0 },
-    duplicate: findDuplicates(texts),
+    duplicate: findDuplicates(scanned),
   }
 }
 
-const unusedOf = (snap: BaseSnapshot, calls: Record<string, number>, mature = true): [string, { tools: number; tokens: number; label?: string }][] =>
+export const unusedOf = (snap: BaseSnapshot, calls: Record<string, number>, mature = true): [string, { tools: number; tokens: number; label?: string }][] =>
   mature ? Object.entries(snap.mcp).filter(([s]) => !(calls[s] > 0)) : []
 
 const nameOf = (key: string, label?: string): string => (label ? `${key} (${label})` : key)
@@ -148,70 +140,13 @@ export function renderHealth(snap: BaseSnapshot, advice: Advice[], calls: Record
   ].join('\n')
 }
 
-const addCalls = (recs: SessionRecord[]): Record<string, number> => {
+export const addCalls = (recs: SessionRecord[]): Record<string, number> => {
   const out: Record<string, number> = {}
   for (const r of recs) for (const [s, c] of Object.entries(r.mcpCalls)) out[s] = (out[s] ?? 0) + c
   return out
 }
 
-async function weekRecords($: EngineInterface, now: number): Promise<SessionRecord[]> {
-  return windowOf(await listRecords($, now - 21 * DAY), now).week
-}
-
-const historyOf = (recs: SessionRecord[], now: number): History => {
+export const historyOf = (recs: SessionRecord[], now: number): History => {
   const since = Math.min(now, ...recs.map((r) => r.startedAt))
   return { mature: now - since >= MIN_HISTORY, since }
-}
-
-let tries = { id: '', n: 0 } // a failing or empty breakdown is tried at most twice per session
-let judged = '' // the session whose heads-up has been decided (shown, or not due)
-
-// Heads-up: decided once per session, but kept for a later turn while a more urgent event is on the band
-// or a compaction is starting. The cheap gates come first; the week's records are read last.
-async function maybeNotice($: EngineInterface, cfg: Config, rec: SessionRecord, snap: BaseSnapshot, ctx: TurnCtx): Promise<void> {
-  if (cfg.healthMode === 'off' || !ctx.interactive || snap.total < NOTICE_TOTAL) return void (judged = rec.id)
-  if (ctx.compacting) return
-  const now = await $.clock.now()
-  const last = await $.store.get('health:notice')
-  if (typeof last === 'number' && now - last < NOTICE_EVERY) return void (judged = rec.id)
-  if (!(await eventIsEmpty($))) return // keep the cooldown unspent; try again at a later turn
-  const week = [...(await weekRecords($, now)).filter((r) => r.id !== rec.id), rec]
-  const unusedMcp = unusedOf(snap, addCalls(week), historyOf(week, now).mature).reduce((s, [, v]) => s + v.tokens, 0)
-  if (unusedMcp < NOTICE_MCP && snap.duplicate.tokens < DUP_TOKENS) return void (judged = rec.id)
-  await $.store.set('health:notice', now)
-  await setEvent($, { kind: 'health', total: snap.total, unusedMcp, duplicate: snap.duplicate.tokens })
-  judged = rec.id
-}
-
-type TurnCtx = { interactive: boolean; compacting: boolean }
-
-// Call last in the turn end. First main turn: take the snapshot once and save it; then the heads-up.
-export async function healthAfterFirstTurn($: EngineInterface, cfg: Config, ctx: TurnCtx): Promise<void> {
-  try {
-    const rec = await current($)
-    if (!rec.base) {
-      if (tries.id !== rec.id) tries = { id: rec.id, n: 0 }
-      if (tries.n++ >= 2) return
-      const snap = await takeSnapshot($)
-      if (!snap) return
-      rec.base = snap
-      await saveRecord($, rec)
-    }
-    if (judged !== rec.id) await maybeNotice($, cfg, rec, rec.base, ctx)
-  } catch (err) {
-    fail($, 'context health', err)
-  }
-}
-
-// This session's snapshot, else the latest of the same project, else the latest overall.
-export async function runHealth($: EngineInterface): Promise<{ text: string }> {
-  const now = await $.clock.now()
-  const rec = await current($)
-  const week = [...(await weekRecords($, now)).filter((r) => r.id !== rec.id), rec]
-  const byAt = week.filter((r) => r.base).sort((a, b) => b.base!.at - a.base!.at)
-  const pick = rec.base ? rec : (byAt.find((r) => r.project === rec.project) ?? byAt[0])
-  if (!pick?.base) return { text: "No snapshot yet: it's taken after the first reply of a session." }
-  const calls = addCalls(week)
-  const history = historyOf(week, now)
-  return { text: `Snapshot from project ${pick.project}.\n\n${renderHealth(pick.base, healthAdvice(pick.base, calls, history), calls, history)}` }
 }

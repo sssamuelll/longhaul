@@ -4,29 +4,28 @@ longhaul runs entirely on your machine. It makes no network calls, sends no tele
 
 ## What it reads
 
-- **Your prompts**, as you send them, to match them against the classifier rules. The text is read in memory and never written anywhere.
+- **Your prompts**, as you send them, to match them against the classifier rules. The text is read in memory and never kept.
 - **Session usage that Claude Code reports**: context size, token counts, the weekly limit percentage and its reset time.
 - **The context breakdown that Claude Code reports**: which MCP tools are loaded and how many tokens each takes, the memory files it loaded and the number of skills.
 - **Those memory files**, to count their lines and find long lines repeated across them. Their contents are not kept.
-- **Four environment variables**, to find the data folder: `CLAUDE_CONFIG_DIR`, `HOME`, `USERPROFILE` and `OS`.
+- **The rules file you name in `rules_file`**, if you set one.
 
-## What it writes
+## What it keeps
 
-Everything goes to `<CLAUDE_CONFIG_DIR or ~/.claude>/longhaul/`:
+No files. Everything it keeps is in the storage Claude Code gives each plugin:
 
-- One record per session: the project folder, token counts and estimated costs, limit percentages over time, how many calls went to each MCP server, compactions (when, why, size before and after), handoff outcomes with the rule ids that matched and the files the subagent touched, and the context estimate (paths, line counts, token estimates).
-- `rules.json`, the classifier rules, created from the defaults on the first run.
-- `report.html`, only when you run `/longhaul page`.
-
-It also keeps a few dates in Claude Code's own plugin storage, so a heads-up shows at most once a day or once a week.
+- One record per session: the project folder, token counts and estimated costs, limit percentages over time, how many calls went to each MCP server, compactions (when, why, size before and after), handoff outcomes with the rule ids that matched and the files the subagent touched, and the context estimate (paths, line counts, token estimates). Records older than 21 days are deleted.
+- A few dates, so a heads-up shows at most once a day or once a week.
 
 ## What it runs
 
-Only your system's file opener (`explorer.exe`, `open` or `xdg-open`), to show the local report page when you run `/longhaul page`.
+No programs.
 
 ## Deleting it
 
-Delete the `longhaul` folder above. Uninstalling the plugin stops all reading and writing.
+Claude Code keeps that storage in one file under `<CLAUDE_CONFIG_DIR or ~/.claude>/plugins/store/` whose name starts with `longhaul`. Delete it to clear everything. Uninstalling the plugin stops all reading and keeping.
+
+Version 0.1 kept its records in `<CLAUDE_CONFIG_DIR or ~/.claude>/longhaul/`. Version 0.2 no longer reads that folder, so you can delete it.
 
 ## Contact
 

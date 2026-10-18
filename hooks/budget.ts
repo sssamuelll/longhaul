@@ -1,10 +1,3 @@
-import { atom, update, type EngineInterface } from 'claude-code'
-import type { Meter } from '../types/index'
-import type { Config } from './config'
-import { setEvent } from './compact'
-import { current, fail, lastMainCtx } from './session'
-import { totalCost, MAX_RATE } from './ledger'
-
 const DAY = 86_400_000
 const SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const
 const LONG = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] as const
@@ -50,66 +43,4 @@ export function parseReset(s: string | undefined): number | null {
   if (!s) return null
   const n = /^\d+(\.\d+)?$/.test(s) ? Number(s) * 1000 : Date.parse(s)
   return Number.isFinite(n) ? n : null
-}
-
-let loggedKinds = false
-
-// What the band's meter row draws; band.tsx spells the same atom, as the engine needs in the file that reads it.
-const meterAtom = atom({ plugin: 'longhaul', key: 'meter' } as const, null)
-
-async function setMeter($: EngineInterface, m: Meter | null): Promise<void> {
-  await update($, meterAtom, () => m)
-}
-
-// A compaction changes the context size: the gauge shows it now, not at the next turn end.
-export async function refreshMeter($: EngineInterface): Promise<void> {
-  await update($, meterAtom, (m) => (m ? { ...m, ctx: lastMainCtx } : m))
-}
-
-// After each main turn: the meter, the rate point, and the once-a-day over-pace heads-up.
-export async function updateBudget($: EngineInterface, cfg: Config): Promise<void> {
-  const off = cfg.budgetMode === 'off' // off hides the meter and the heads-up; the weekly reading is still recorded
-  const usage = await $.session.usage()
-  if (!loggedKinds) {
-    loggedKinds = true
-    $.ui.log(`longhaul: rate limit kinds: ${usage.rateLimits.map((r) => r.kind).join(', ') || 'none'}`, { to: 'debug' })
-  }
-  const seven = usage.rateLimits.find((r) => r.kind === 'seven_day') ?? usage.rateLimits.find((r) => /seven|7|week/i.test(r.kind))
-  const resetsAt = parseReset(seven?.resetsAt)
-  if (!seven || resetsAt === null) {
-    await setMeter($, off ? null : { ctx: lastMainCtx, hard: cfg.hardLimit, pace: null })
-    return
-  }
-  const now = await $.clock.now()
-  const date = localDate(now)
-  const percent = seven.percentUsed
-  const key = `day:${date}`
-  let midnight = await $.store.get(key)
-  if (typeof midnight !== 'number') {
-    midnight = percent
-    await $.store.set(key, percent)
-  } else if (percent < midnight) {
-    midnight = 0 // the week reset after the snapshot
-    await $.store.set(key, 0)
-  }
-  const rec = await current($)
-  if (rec.rate.at(-1)?.[1] !== percent) {
-    rec.rate.push([now, percent, totalCost(rec.cost)])
-    rec.rate = rec.rate.slice(-MAX_RATE)
-  }
-  rec.weekResetsAt = seven.resetsAt
-  const p = pace({ percent, resetsAt, now, midnightPercent: midnight as number })
-  await setMeter($, off ? null : { ctx: lastMainCtx, hard: cfg.hardLimit, pace: { ...p, stale: resetsAt <= now } })
-  if (!off && resetsAt > now && p.runsOutAt !== null && p.today > p.allowance * 1.5 && !(await $.store.get(`warned:${date}`))) {
-    await $.store.set(`warned:${date}`, true)
-    await setEvent($, { kind: 'over-pace', today: Math.floor(p.today), allowance: Math.floor(p.allowance), runsOutAt: p.runsOutAt })
-  }
-}
-
-export async function budgetAfterTurn($: EngineInterface, cfg: Config): Promise<void> {
-  try {
-    await updateBudget($, cfg)
-  } catch (err) {
-    fail($, 'budget', err)
-  }
 }

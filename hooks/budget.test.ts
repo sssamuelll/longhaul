@@ -22,26 +22,24 @@ test('parseReset takes ISO and epoch seconds', async () => {
 
 function stub(on: any, o: { percent: number; now: number; mode?: string }) {
   const store = new Map<string, unknown>()
-  const files: Record<string, string> = {}
   const status: unknown[] = []
   const state = new Map<string, unknown>()
   on('session.id', async () => ({ value: 'b1' }))
   on('session.cwd', async () => ({ value: '/w/p' }))
-  on('env.get', async () => ({ value: undefined }))
-  on('fs.read', async () => ({ deny: 'ENOENT' }))
-  on('fs.write', async (_$: any, e: any) => ((files[e.path] = e.text), { value: undefined }))
   on('ui.log', async () => ({ value: undefined }))
   on('ui.status', async (_$: any, e: any) => (status.push(e.text), { value: undefined }))
   on('clock.now', async () => ({ value: o.now }))
   on('store.get', async (_$: any, e: any) => ({ value: store.get(e.key) }))
   on('store.set', async (_$: any, e: any) => (store.set(e.key, e.value), { value: undefined }))
+  on('store.delete', async (_$: any, e: any) => (store.delete(e.key), { value: undefined }))
+  on('store.keys', async () => ({ value: [...store.keys()] }))
   on('state.get', async (_$: any, e: any) => ({ value: { value: state.get(e.key), version: 0 } as never }))
   on('state.set', async (_$: any, e: any) => (state.set(e.key, e.value), { value: { isSet: true, version: 1 } as never }))
   on('session.usage', async () => ({
     value: { rateLimits: [{ kind: 'seven_day', percentUsed: o.percent, resetsAt: new Date(resetsAt).toISOString() }] } as never,
   }))
   on('turn.complete', async () => ({ text: '' }))
-  return { store, status, state, files }
+  return { store, status, state }
 }
 
 test('a main turn end sets the meter, the midnight snapshot and one over-pace event a day', async ($, on) => {
@@ -72,7 +70,7 @@ test('the turn end saves the new rate point, and a reset after the snapshot zero
   await $.turn.complete({ turnId: 't', reason: 'done', answer: '', durationMs: 1, isAborted: false } as never)
   expect(s.store.get('day:2026-10-17')).toBe(0)
   expect((s.state.get('meter') as any).pace.today).toBe(3)
-  const saved = JSON.parse(Object.values(s.files).at(-1)!)
+  const saved = s.store.get('session:b1') as any
   expect(saved.rate.at(-1)[1]).toBe(3)
   expect(saved.weekResetsAt).toBe(new Date(resetsAt).toISOString())
 })
@@ -90,7 +88,7 @@ test('budget_mode off hides the gauges and the warning but still records the wee
   await $.turn.complete({ turnId: 't', reason: 'done', answer: '', durationMs: 1, isAborted: false } as never)
   expect(s.state.get('meter') ?? null).toBe(null)
   expect(JSON.stringify([...s.state.values()])).not.toContain('over-pace')
-  const saved = JSON.parse(Object.values(s.files).at(-1)!)
+  const saved = s.store.get('session:b1') as any
   expect(saved.rate.at(-1)[1]).toBe(36)
   expect(saved.weekResetsAt).toBe(new Date(resetsAt).toISOString())
   const out = renderText(buildReport([saved], now, []))

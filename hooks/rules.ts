@@ -1,6 +1,3 @@
-import type { EngineInterface } from 'claude-code'
-import { dataDir } from './ledger'
-
 export type Rule = { id: string; verdict: 'opus' | 'sonnet'; pattern: string; flags?: string }
 
 // \b is ASCII-only, so Spanish rules use \p{L} lookarounds with the u flag.
@@ -48,14 +45,9 @@ export const DEFAULT_RULES: Rule[] = [
   es('run-tests', 'sonnet', String.raw`corre (?:las )?pruebas|ejecuta (?:las )?(?:pruebas|tests)`),
 ]
 
-let warned = false // one debug line per session; $ itself must not be kept or passed
+let warned = false // one debug line per session
 export const resetRulesWarn = (): void => void (warned = false)
-
-function warn($: EngineInterface, why: string): void {
-  if (warned) return
-  warned = true
-  $.ui.log(`longhaul: ${why}`, { to: 'debug' })
-}
+export const takeRulesWarn = (): boolean => (warned ? false : (warned = true))
 
 function valid(r: unknown): r is Rule {
   const x = r as Rule
@@ -70,34 +62,12 @@ function valid(r: unknown): r is Rule {
   }
 }
 
-// A missing file is created; a broken one is left alone (they may be mid-edit).
-export async function loadRules($: EngineInterface): Promise<Rule[]> {
-  const file = `${await dataDir($)}/rules.json`
-  let text: string
+// The rules in a rules file's text, or null when it is not a JSON array.
+export function parseRules(text: string): Rule[] | null {
   try {
-    text = await $.fs.read(file)
+    const parsed: unknown = JSON.parse(text)
+    return Array.isArray(parsed) ? parsed.filter(valid) : null
   } catch {
-    // only an absent file is created; any other read error must not clobber the user's edits
-    let absent = false
-    try {
-      absent = !(await $.fs.exists(file))
-    } catch {}
-    if (!absent) {
-      warn($, `could not read ${file}; using the built-in rules`)
-      return DEFAULT_RULES
-    }
-    try {
-      await $.fs.write(file, JSON.stringify(DEFAULT_RULES, null, 2) + '\n')
-    } catch {}
-    return DEFAULT_RULES
+    return null
   }
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(text)
-    if (!Array.isArray(parsed)) throw new Error('not an array')
-  } catch {
-    warn($, `${file} is not a valid rules array; using the built-in rules`)
-    return DEFAULT_RULES
-  }
-  return parsed.filter(valid)
 }

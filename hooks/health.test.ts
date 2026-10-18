@@ -86,34 +86,27 @@ test('renderHealth lists items biggest first, marks estimates, and shows no cont
 const norm = (p: string): string => p.replace(/\\/g, '/').replace(/^[A-Za-z]:/, '')
 
 type Opt = { id: string; breakdown?: unknown; reject?: boolean; files?: Record<string, string>; store?: Map<string, unknown>; cwd?: string; history?: boolean; seeds?: object[]; ctx?: number }
-const SEED = '/cfg/longhaul/sessions/old-1.json'
-const seedRec = (): string => JSON.stringify(newRecord('old-1', 'proj', now - 4 * DAY))
 function stub(on: any, o: Opt) {
-  const files: Record<string, string> = { ...(o.files ?? {}) }
-  if (o.history !== false) files[SEED] = seedRec() // four days of history, so unused-server verdicts are due
-  for (const [i, r] of (o.seeds ?? []).entries()) files[`/cfg/longhaul/sessions/seed-${i}.json`] = JSON.stringify(r)
+  const files: Record<string, string> = { ...(o.files ?? {}) } // memory files
   const store = o.store ?? new Map<string, unknown>()
+  if (o.history !== false) store.set('session:old-1', newRecord('old-1', 'proj', now - 4 * DAY)) // four days of history, so unused-server verdicts are due
+  for (const r of o.seeds ?? []) store.set(`session:${(r as { id: string }).id}`, r)
   const state = new Map<string, unknown>()
   const calls = { breakdown: [] as unknown[], lists: 0 }
   const find = (p: string): string | undefined => Object.keys(files).find((k) => norm(k) === norm(p))
   on('session.id', async () => ({ value: o.id }))
   on('session.cwd', async () => ({ value: o.cwd ?? '/w/p' }))
-  on('env.get', async (_$: any, e: any) => ({ value: e.name === 'CLAUDE_CONFIG_DIR' ? '/cfg' : undefined }))
   on('fs.read', async (_$: any, e: any) => {
     const k = find(e.path)
     return k ? { value: files[k] } : { deny: 'ENOENT' }
   })
-  on('fs.write', async (_$: any, e: any) => ((files[find(e.path) ?? e.path] = e.text), { value: undefined }))
-  on('fs.list', async () => (calls.lists++, {
-    value: Object.keys(files)
-      .filter((k) => /sessions/.test(k))
-      .map((k) => ({ name: norm(k).split('/').pop()!, kind: 'file', size: 1, mtimeMs: 0, isLink: false })),
-  }))
   on('ui.log', async () => ({ value: undefined }))
   on('ui.status', async () => ({ value: undefined }))
   on('clock.now', async () => ({ value: now }))
   on('store.get', async (_$: any, e: any) => ({ value: store.get(e.key) }))
-  on('store.set', async (_$: any, e: any) => (store.set(e.key, e.value), { value: undefined }))
+  on('store.set', async (_$: any, e: any) => (store.set(e.key, JSON.parse(JSON.stringify(e.value))), { value: undefined }))
+  on('store.delete', async (_$: any, e: any) => (store.delete(e.key), { value: undefined }))
+  on('store.keys', async () => (calls.lists++, { value: [...store.keys()] }))
   on('state.get', async (_$: any, e: any) => ({ value: { value: state.get(e.key), version: 0 } as never }))
   on('state.set', async (_$: any, e: any) => (state.set(e.key, e.value), { value: { isSet: true, version: 1 } as never }))
   on('tool.list', async () => ({ value: [] }))
@@ -130,7 +123,7 @@ function stub(on: any, o: Opt) {
       return { turnId: 't', index: 0, answer: '', toolUses: [], usage: { model: 'claude-opus-5-5', input_tokens: 0, output_tokens: 0, cache_read_input_tokens: o.ctx, cache_creation_input_tokens: 0 } } as never
     })
   }
-  return { files, store, state, calls }
+  return { store, state, calls }
 }
 
 const bd = (o: Record<string, unknown> = {}) => ({
@@ -153,7 +146,7 @@ const done = async ($: any, id = 't') => {
 const step = async ($: any) => {
   for await (const _ of $.turn.step({ turnId: 't', index: 0, model: 'claude-opus-5-5', messageCount: 1 } as never)) void _
 }
-const saved = (files: Record<string, string>, id: string) => JSON.parse(files[Object.keys(files).find((k) => k.endsWith(`${id}.json`))!])
+const saved = (store: Map<string, unknown>, id: string): any => store.get(`session:${id}`)
 const healthEvent = (state: Map<string, unknown>) => [...state.values()].find((v: any) => v?.kind === 'health') as any
 const mem = { '/p/CLAUDE.md': `${L('x')}\n${L('y')}\nunique one ${'q'.repeat(10)}`, '/p/AGENTS.md': `${L('x')}\n${L('y')}\nunique two` }
 
@@ -162,7 +155,7 @@ test('the snapshot is taken once, at the first main turn end, and saved on the r
   await done($)
   await done($, 't2')
   expect(s.calls.breakdown).toEqual(['summary'])
-  const base = saved(s.files, 'h1').base
+  const base = saved(s.store, 'h1').base
   expect(base.total).toBe(93_000)
   expect(base.mcp.github).toEqual({ tools: 2, tokens: 41_000 })
   expect(base.skills).toEqual({ count: 9, tokens: 2000 })
@@ -175,19 +168,19 @@ test('the snapshot is taken once, at the first main turn end, and saved on the r
 test('a rejecting breakdown leaves base unset and never throws', async ($, on) => {
   const s = stub(on, { id: 'h2', reject: true })
   await done($)
-  expect(saved(s.files, 'h2').base).toBeUndefined()
+  expect(saved(s.store, 'h2').base).toBeUndefined()
 })
 
 test('a missing breakdown leaves base unset', async ($, on) => {
   const s = stub(on, { id: 'h3' })
   await done($)
-  expect(saved(s.files, 'h3').base).toBeUndefined()
+  expect(saved(s.store, 'h3').base).toBeUndefined()
 })
 
 test('an unreadable memory file is skipped for the duplicate scan but still listed', async ($, on) => {
   const s = stub(on, { id: 'h4', breakdown: bd(), files: { '/p/CLAUDE.md': mem['/p/CLAUDE.md'] } })
   await done($)
-  const m = saved(s.files, 'h4').base.memory
+  const m = saved(s.store, 'h4').base.memory
   expect(m.map((x: any) => x.path)).toEqual(['/p/CLAUDE.md', '/p/AGENTS.md'])
   expect(m[1].lines).toBeUndefined()
   expect('lines' in m[1]).toBe(false)
@@ -214,7 +207,7 @@ test('health_mode off never shows the heads-up, but the snapshot is still taken'
   const s = stub(on, { id: 'h8', breakdown: bd() })
   await done($)
   expect(healthEvent(s.state)).toBeUndefined()
-  expect(saved(s.files, 'h8').base.total).toBe(93_000)
+  expect(saved(s.store, 'h8').base.total).toBe(93_000)
 })
 
 test('light sessions show no heads-up', async ($, on) => {
@@ -292,7 +285,7 @@ test('separator lines are not duplicates, and our own server is not listed', asy
     breakdown: bd({ mcpTools: [{ name: 'mcp__longhaul__review', serverName: 'longhaul', tokens: 900, isLoaded: true }] }),
   })
   await done($)
-  expect(saved(s.files, 'h14').base.mcp).toEqual({})
+  expect(saved(s.store, 'h14').base.mcp).toEqual({})
 })
 
 // ---- fix wave 2 ----
@@ -313,7 +306,7 @@ test('1: servers are keyed by wire name, so plugin servers and connectors with c
     seeds: [{ ...newRecord('seed-a', 'proj', now - 3 * DAY), mcpCalls: { plugin_foo_bar: 2, claude_ai_Claude_Docs: 1 } }],
   })
   await done($)
-  expect(Object.keys(saved(s.files, 'w1').base.mcp).sort()).toEqual(['claude_ai_Claude_Docs', 'github', 'plugin_foo_bar'])
+  expect(Object.keys(saved(s.store, 'w1').base.mcp).sort()).toEqual(['claude_ai_Claude_Docs', 'github', 'plugin_foo_bar'])
   const r: any = await $.command.run({ command: 'longhaul', args: 'health' })
   expect(r.text).toMatch(/plugin_foo_bar.*[^t] used this week/)
   expect(r.text).toMatch(/claude_ai_Claude_Docs.*[^t] used this week/)
@@ -329,8 +322,8 @@ test('2: the start size leaves out the Messages row', async ($, on) => {
   ]
   const s = stub(on, { id: 'm1', breakdown: bd({ categories: cats }) })
   await done($)
-  expect(saved(s.files, 'm1').base.total).toBe(87_000)
-  expect(saved(s.files, 'm1').base.afterFirstReply).toBeUndefined()
+  expect(saved(s.store, 'm1').base.total).toBe(87_000)
+  expect(saved(s.store, 'm1').base.afterFirstReply).toBeUndefined()
   const r: any = await $.command.run({ command: 'longhaul', args: 'health' })
   expect(r.text).toContain('87,000 tokens (est.)')
   expect(r.text).not.toContain('after the first reply')
@@ -339,7 +332,7 @@ test('2: the start size leaves out the Messages row', async ($, on) => {
 test('2: no Messages row keeps the total and says so', async ($, on) => {
   const s = stub(on, { id: 'm2', breakdown: bd({ categories: [] }) })
   await done($)
-  expect(saved(s.files, 'm2').base.total).toBe(93_000)
+  expect(saved(s.store, 'm2').base.total).toBe(93_000)
   const r: any = await $.command.run({ command: 'longhaul', args: 'health' })
   expect(r.text).toContain('counted after the first reply')
 })
@@ -371,7 +364,7 @@ test('4a: a non-interactive session snapshots but never raises or stamps the hea
   const s = stub(on, { id: 'n1', breakdown: bd(), store })
   await begin($, false)
   await done($)
-  expect(saved(s.files, 'n1').base.total).toBe(93_000)
+  expect(saved(s.store, 'n1').base.total).toBe(93_000)
   expect(healthEvent(s.state)).toBeUndefined()
   expect(store.has('health:notice')).toBe(false)
 })
@@ -409,7 +402,7 @@ test('7: a trailing newline is not a line', async ($, on) => {
   const text = Array.from({ length: 200 }, (_, i) => `row ${i}`).join('\n') + '\n'
   const s = stub(on, { id: 'l1', breakdown: bd(), files: { '/p/CLAUDE.md': text, '/p/AGENTS.md': 'x' } })
   await done($)
-  expect(saved(s.files, 'l1').base.memory[0].lines).toBe(200)
+  expect(saved(s.store, 'l1').base.memory[0].lines).toBe(200)
 })
 
 const seedWithBase = (id: string, project: string, at: number, total: number) => ({

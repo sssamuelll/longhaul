@@ -1,5 +1,5 @@
 import { test, expect } from 'claude-code/testing'
-import { measuredShares, ELSEWHERE, buildReport, renderText, renderHtml } from './report'
+import { measuredShares, ELSEWHERE, buildReport, renderText } from './report'
 import { newRecord, type SessionRecord, type Decision } from './ledger'
 import { PRICES_AS_OF } from './prices'
 
@@ -97,75 +97,31 @@ test('records outside the week are excluded', async () => {
   expect(t).toContain('across 1 session')
 })
 
-test('renderHtml has the headings, a dark rule, no scripts, and escapes', async () => {
-  const evil = mk('e', { project: '<b>&x', steps: 1, cost: { input: 1, write: 0, read: 0, output: 0 } })
-  const h = renderHtml(buildReport([big, evil], now, []))
-  for (const t of ['This week', 'Where it went', 'Why', 'Biggest sessions', 'Sonnet handoffs', 'Compactions', 'Fix first']) expect(h).toContain(`<h2>${t}</h2>`)
-  expect(h).toContain('prefers-color-scheme: dark')
-  expect(h).not.toMatch(/<script|https?:\/\//)
-  expect(h).toContain('&lt;b&gt;&amp;x')
-  expect(h).not.toContain('<b>&x')
-})
-
-function stub(on: any, o: { os?: string; home?: string; files: Record<string, string>; ran: string[][]; openOk?: (argv: string[]) => boolean }) {
-  on('env.get', async (_$: any, e: any) => ({ value: e.name === 'OS' ? o.os : e.name === 'HOME' ? (o.home ?? '/h') : undefined }))
-  on('fs.list', async () => ({ value: [{ name: 'a.json', kind: 'file', size: 1, mtimeMs: 0, isLink: false }] }))
-  on('fs.read', async () => ({ value: JSON.stringify({ ...big, startedAt: Date.now(), rate: [], weekResetsAt: undefined }) }))
-  on('fs.write', async (_$: any, e: any) => ((o.files[e.path] = e.text), { value: undefined }))
+function stub(on: any) {
+  const store = new Map<string, unknown>([['session:a', { ...big, startedAt: Date.now(), rate: [], weekResetsAt: undefined }]])
+  on('store.keys', async () => ({ value: [...store.keys()] }))
+  on('store.get', async (_$: any, e: any) => ({ value: store.get(e.key) }))
+  on('store.delete', async (_$: any, e: any) => (store.delete(e.key), { value: undefined }))
   on('clock.now', async () => ({ value: Date.now() }))
   on('ui.log', async () => ({ value: undefined }))
   on('tool.list', async () => ({ value: [{ name: 'mcp__github__a', description: '', mcp: true }, { name: 'mcp__slack__b', description: '', mcp: true }] }))
   on('command.register', async () => ({ value: undefined }))
-  on('process.run', async (_$: any, e: any) => {
-    o.ran.push([...e.argv])
-    return { value: { exitCode: o.openOk && !o.openOk(e.argv) ? 1 : 0, stdout: '', stderr: '' } as never }
-  })
 }
 
-test('/longhaul prints the text report', async ($, on) => {
-  stub(on, { files: {}, ran: [] })
-  const r = await $.command.run({ command: 'longhaul', args: 'weird' })
-  expect(r.text).toContain('Biggest sessions')
-  expect(r.text).toContain('slack (1 tool)')
-  expect(r.text).not.toContain('github (')
-})
-
-test('/longhaul page writes and opens with argv on Windows', async ($, on) => {
-  const files: Record<string, string> = {}
-  const ran: string[][] = []
-  stub(on, { os: 'Windows_NT', files, ran })
-  const r = await $.command.run({ command: 'longhaul', args: ' Page ' })
-  const path = Object.keys(files).find((p) => p.endsWith('report.html'))!
-  expect(files[path]).toContain('<h2>Fix first</h2>')
-  expect(ran).toEqual([['explorer.exe', '\\h\\.claude\\longhaul\\report.html']])
-  expect(path).toMatch(/longhaul.report.html$/)
-  expect(r.text).toContain('report.html')
-})
-
-test('/longhaul page falls back to xdg-open and still answers the path', async ($, on) => {
-  const files: Record<string, string> = {}
-  const ran: string[][] = []
-  stub(on, { files, ran, openOk: (a) => a[0] === 'xdg-open' })
-  await $.command.run({ command: 'longhaul', args: 'page' })
-  expect(ran.map((a) => a[0])).toEqual(['open', 'xdg-open'])
-})
-
-test('/longhaul page still answers the path when nothing opens it', async ($, on) => {
-  stub(on, { files: {}, ran: [], openOk: () => false })
-  const r = await $.command.run({ command: 'longhaul', args: 'page' })
-  expect(r.text).toContain('report.html')
+test('/longhaul prints the text report, whatever the arguments', async ($, on) => {
+  stub(on)
+  for (const args of ['weird', ' Page ']) {
+    const r = await $.command.run({ command: 'longhaul', args })
+    expect(r.text).toContain('Biggest sessions')
+    expect(r.text).toContain('slack (1 tool)')
+    expect(r.text).not.toContain('github (')
+    expect(r.text).not.toContain('report.html')
+  }
 })
 
 test('dollar figure and footer say API equivalent', async () => {
   expect(text).toContain('About $10.00 at API prices across 1 session (an equivalent, not a bill) (est.)')
   expect(text).toContain(`Prices as of ${PRICES_AS_OF}, at public API prices.`)
-})
-
-test('windows opener passes one backslash path to explorer, no cmd', async ($, on) => {
-  const ran: string[][] = []
-  stub(on, { os: 'Windows_NT', files: {}, ran, home: 'C:/Users/A&B C' })
-  await $.command.run({ command: 'longhaul', args: 'page' })
-  expect(ran).toEqual([['explorer.exe', 'C:\\Users\\A&B C\\.claude\\longhaul\\report.html']])
 })
 
 test('a stale reset moves forward a whole week and old points do not count', async () => {
@@ -215,6 +171,5 @@ test('Compactions section: counts by reason, medians, hard-limit sessions; empty
   expect(sec).toContain('4 compactions: 2 task finished, 1 hard limit, 1 Claude Code auto-compact.')
   expect(sec).toContain('Typically 300k down to 40k.')
   expect(sec).toContain('1 session reached the hard limit.')
-  expect(renderHtml(buildReport([a], now, []))).toContain('<h2>Compactions</h2>')
   expect(renderText(buildReport([mk('c')], now, []))).toContain('No compactions this week.')
 })
