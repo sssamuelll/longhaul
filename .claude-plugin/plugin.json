@@ -7,7 +7,16 @@
   "license": "MIT",
   "repository": "https://github.com/sssamuelll/longhaul",
   "homepage": "https://github.com/sssamuelll/longhaul",
+  "privacyPolicyUrl": "https://github.com/sssamuelll/longhaul/blob/main/PRIVACY.md",
   "description": "Makes your Claude Code week last: compacts between tasks, hands plan steps to Sonnet, shows the pace you can afford.",
+  "keywords": [
+    "usage limits",
+    "context",
+    "compaction",
+    "sonnet",
+    "subagents",
+    "tokens"
+  ],
   "types": "./types/index.d.ts",
   "userConfig": {
     "guard_mode": {

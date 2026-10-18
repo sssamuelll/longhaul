@@ -1,5 +1,6 @@
 {
   "name": "longhaul",
   "owner": { "name": "Samuel Ballesteros" },
+  "description": "longhaul, a Claude Code mod that helps Pro and Max plans make the weekly usage limit last.",
   "plugins": [{ "name": "longhaul", "source": "./" }]
 }
