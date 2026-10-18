@@ -1,8 +1,5 @@
-import type { EngineInterface } from 'claude-code'
-import type { Config } from './config'
-import { classify } from './classifier'
-import { loadRules, resetRulesWarn, type Rule } from './rules'
-import { current, fail } from './session'
+import type { Rule } from './rules'
+import { resetRulesWarn } from './rules'
 import type { Decision, SessionRecord } from './ledger'
 
 export const HANDOFF =
@@ -17,19 +14,8 @@ const GUESS_AFTER = 3 // prompts without a review call before the outcome is gue
 
 export const isExpensiveMain = (model: string): boolean => /opus|fable/i.test(model)
 
-// The model to set on a subagent, or undefined to leave it alone. Only the built-in general
-// types and Explore are rewritten; a custom agent's own definition decides its model.
-export function routeSubagent(
-  e: { subagentType: string; model?: string; parentModel: string; fork: boolean },
-  cfg: Config,
-): string | undefined {
-  if (e.fork || e.model || !isExpensiveMain(e.parentModel)) return undefined
-  const t = e.subagentType.toLowerCase()
-  if (cfg.keepOnOpus.some((k) => t.includes(k))) return undefined
-  if (e.subagentType === 'Explore') return cfg.exploreModel
-  if (e.subagentType === 'general-purpose' || e.subagentType === 'claude') return 'sonnet'
-  return undefined
-}
+export const SUBAGENT_NOTE =
+  'longhaul: when you start a built-in general-purpose or Explore subagent for execution work, set its model to "sonnet". Keep your own model for review, design, planning and architecture.'
 
 // Nobody called review: a file the main loop edited after the subagent did means it was fixed.
 export function guessOutcome(d: Decision, mainEditedFiles: string[]): Decision {
@@ -40,6 +26,9 @@ export function guessOutcome(d: Decision, mainEditedFiles: string[]): Decision {
 
 // Memory only, like the guard's state.
 let rules: Rule[] | null = null
+export const getRules = (): Rule[] | null => rules
+export const setRules = (r: Rule[]): void => void (rules = r)
+export const clearMainEdited = (): void => void (mainEdited = [])
 let mainEdited: string[] = []
 
 export const resetHandoff = (): void => void ((rules = null), (mainEdited = []), resetRulesWarn())
@@ -75,37 +64,11 @@ export function applyReview(rec: SessionRecord, input: unknown): { result: strin
   return { result: 'recorded' }
 }
 
-// New main prompt: age pending decisions, then classify. Returns the context to attach, if any.
-export async function handoffContext($: EngineInterface, cfg: Config, text: string): Promise<string | undefined> {
-  try {
-    const rec = await current($)
-    rec.decisions = rec.decisions.map((d) => {
-      if (d.outcome !== 'pending') return d
-      const aged = { ...d, turnsSince: d.turnsSince + 1 }
-      return aged.turnsSince >= GUESS_AFTER ? guessOutcome(aged, mainEdited) : aged
-    })
-    if (cfg.classifierMode === 'off') return undefined
-    rules ??= await loadRules($)
-    const r = classify(text, rules)
-    if (r.verdict !== 'sonnet' || !isExpensiveMain(await $.session.model())) return undefined
-    rec.decisions.push({ at: await $.clock.now(), verdict: 'sonnet', ruleIds: r.ruleIds, mode: cfg.classifierMode, outcome: 'pending', subFiles: [], turnsSince: 0 })
-    mainEdited = []
-    return cfg.classifierMode === 'ask' ? ASK_HANDOFF : HANDOFF
-  } catch (err) {
-    fail($, 'handoff', err)
-    return undefined
-  }
-}
-
-export async function registerReview($: EngineInterface): Promise<void> {
-  try {
-    await $.tool.register({
-      name: 'review',
-      description: 'Record how a Sonnet handoff went after you reviewed it.',
-      inputSchema: { type: 'object', properties: { outcome: { type: 'string', enum: [...OUTCOMES] } }, required: ['outcome'] },
-      isDeferred: true,
-    })
-  } catch (err) {
-    fail($, 'register review tool', err)
-  }
+// New main prompt: pending decisions age by one prompt, and one nobody reviewed is guessed after a few.
+export function ageDecisions(rec: SessionRecord): void {
+  rec.decisions = rec.decisions.map((d) => {
+    if (d.outcome !== 'pending') return d
+    const aged = { ...d, turnsSince: d.turnsSince + 1 }
+    return aged.turnsSince >= GUESS_AFTER ? guessOutcome(aged, mainEdited) : aged
+  })
 }

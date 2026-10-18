@@ -7,6 +7,8 @@ import { newRecord } from './ledger'
 
 const DAY = 86_400_000
 const now = new Date(2026, 9, 18, 12, 0).getTime()
+// The engine hands Windows paths over as D:\r\rules.json: compare them the POSIX way.
+const norm = (p: string) => p.replace(/\\/g, '/').replace(/^[A-Za-z]:/, '')
 const u = (o: object) => ({ input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, ...o })
 
 function stub(on: any, o: { store?: Map<string, unknown>; files?: Record<string, string>; model?: string; full?: () => boolean } = {}) {
@@ -20,14 +22,14 @@ function stub(on: any, o: { store?: Map<string, unknown>; files?: Record<string,
   on('session.model', async () => ({ value: o.model ?? 'claude-opus-5-5' }))
   on('session.usage', async () => ({ value: { rateLimits: [], context: {} } as never }))
   on('session.start', async () => ({ cwd: '/w/p' }))
-  on('session.end', async () => ({}) as never)
+  on('session.end', async (_$: any, e: any) => ({ sessionId: e.sessionId }))
   on('clock.now', async () => ({ value: now }))
   on('env.get', async (_$: any, e: any) => (banned.push(`env.get ${e.name}`), { value: undefined }))
   on('fs.write', async (_$: any, e: any) => (banned.push(`fs.write ${e.path}`), { value: undefined }))
   on('fs.list', async (_$: any, e: any) => (banned.push(`fs.list ${e.path}`), { value: [] }))
   on('process.run', async () => (banned.push('process.run'), { value: { exitCode: 0, stdout: '', stderr: '' } as never }))
-  on('fs.read', async (_$: any, e: any) => (reads.push(e.path), e.path in files ? { value: files[e.path] } : { deny: 'ENOENT' }))
-  on('fs.exists', async (_$: any, e: any) => ({ value: e.path in files }))
+  on('fs.read', async (_$: any, e: any) => (reads.push(norm(e.path)), norm(e.path) in files ? { value: files[norm(e.path)] } : { deny: 'ENOENT' }))
+  on('fs.exists', async (_$: any, e: any) => ({ value: norm(e.path) in files }))
   on('store.get', async (_$: any, e: any) => ({ value: store.get(e.key) }))
   on('store.set', async (_$: any, e: any) => (o.full?.() ? { deny: 'store over 4 MiB' } : (store.set(e.key, e.value), { value: undefined })))
   on('store.delete', async (_$: any, e: any) => (store.delete(e.key), { value: undefined }))
@@ -62,7 +64,7 @@ test('a whole session keeps its record in the plugin store and writes no file, r
   await $.command.run({ command: 'longhaul', args: 'health' })
   const page: any = await $.command.run({ command: 'longhaul', args: 'page' })
   expect(page.text).not.toContain('report.html')
-  await $.session.end({ reason: 'exit' } as never)
+  await $.session.end({ reason: 'exit', sessionId: 'd1' } as never)
   expect(s.banned).toEqual([])
   const rec = s.store.get('session:d1') as { id: string; steps: number }
   expect(rec.id).toBe('d1')

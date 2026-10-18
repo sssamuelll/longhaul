@@ -1,5 +1,4 @@
-import type { EngineInterface } from 'claude-code'
-import { loadRecord, projectOf, saveRecord, type SessionRecord } from './ledger'
+import type { SessionRecord } from './ledger'
 
 // Main-loop context of the latest step; the guard reads it. Read it through a live binding.
 export let lastMainCtx = 0
@@ -24,38 +23,5 @@ export const isCompactPending = (): boolean => compactPending
 export const setCompactPending = (v: boolean): void => void (compactPending = v)
 
 let rec: SessionRecord | null = null
-let pending: Promise<SessionRecord> | null = null
-let pendingId = ''
 export const peekRecord = (): SessionRecord | null => rec
-// $ may only be passed to top-level function declarations, so these live outside register.
-async function switchTo($: EngineInterface, old: SessionRecord | null, id: string): Promise<SessionRecord> {
-  if (old) await saveRecord($, old) // nothing in memory is discarded
-  const next = await loadRecord($, id, projectOf(await $.session.cwd()), Date.now())
-  rec = next
-  return next
-}
-
-// Concurrent callers (parallel subagents) share one in-flight load, so they share one record.
-export async function current($: EngineInterface): Promise<SessionRecord> {
-  const id = await $.session.id()
-  if (rec && rec.id === id) return rec
-  if (!pending || pendingId !== id) {
-    pendingId = id
-    pending = switchTo($, rec, id)
-  }
-  const p = pending
-  try {
-    return await p
-  } finally {
-    if (pending === p) pending = null
-  }
-}
-
-export function fail($: EngineInterface, what: string, err: unknown): void {
-  try {
-    $.ui.log(`longhaul: ${what} failed: ${err instanceof Error ? err.message : String(err)}`, { to: 'debug' })
-  } catch {
-    // logging must not break the session either
-  }
-}
-
+export const setRecord = (r: SessionRecord): void => void (rec = r)

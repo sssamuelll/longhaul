@@ -8,13 +8,22 @@ test('withKeepList appends the keep-list to any instructions', async () => {
   expect(s.endsWith(KEEP_LIST)).toBe(true)
 })
 
+// The plugin store, in memory: the session record lives under session:<id>.
+function storeStub(on: any, store = new Map<string, unknown>()) {
+  on('store.get', async (_$: any, e: any) => ({ value: store.get(e.key) }))
+  on('store.set', async (_$: any, e: any) => (store.set(e.key, e.value), { value: undefined }))
+  on('store.delete', async (_$: any, e: any) => (store.delete(e.key), { value: undefined }))
+  on('store.keys', async () => ({ value: [...store.keys()] }))
+  return store
+}
+const recordOf = (store: Map<string, unknown>): any => store.get('session:sc1')
+
+
 // Stubs the session nouns the plugin touches; the compaction bottom echoes what it was given.
 function stub0(on: any) {
   on('session.id', async () => ({ value: 'sc1' }))
   on('session.cwd', async () => ({ value: '/w/p' }))
-  on('env.get', async (_$: any, e: any) => ({ value: e.name === 'CLAUDE_CONFIG_DIR' ? '/cfg' : undefined }))
-  on('fs.read', async () => ({ deny: 'ENOENT' }))
-  on('fs.write', async () => ({ value: undefined }))
+  storeStub(on)
   on('turn.complete', async () => ({ text: '' }))
   stepStub(on)
   on('state.get', async () => ({ value: { value: undefined, version: 0 } as never }))
@@ -22,15 +31,13 @@ function stub0(on: any) {
   on('ui.log', async () => ({ value: undefined }))
 }
 
-function stub(on: Parameters<Parameters<typeof test>[1]>[1], files: Record<string, string>, res: object, state = new Map<string, unknown>()) {
+function stub(on: Parameters<Parameters<typeof test>[1]>[1], files: Map<string, unknown>, res: object, state = new Map<string, unknown>()) {
   const seen: (string | undefined)[] = []
   const logs: string[] = []
   ;(seen as any).logs = logs
   on('session.id', async () => ({ value: 'sc1' }))
   on('session.cwd', async () => ({ value: '/w/p' }))
-  on('env.get', async (_$, e) => ({ value: e.name === 'CLAUDE_CONFIG_DIR' ? '/cfg' : undefined }))
-  on('fs.read', async (_$, e) => (e.path in files ? { value: files[e.path] } : { deny: 'ENOENT' }))
-  on('fs.write', async (_$, e) => ((files[e.path] = e.text), { value: undefined }))
+  storeStub(on, files)
   on('turn.complete', async () => ({ text: '' }))
   stepStub(on)
   on('ui.log', async (_$, e) => (logs.push(JSON.stringify(e)), { value: undefined }))
@@ -44,7 +51,7 @@ function stub(on: Parameters<Parameters<typeof test>[1]>[1], files: Record<strin
 }
 
 test('every trigger gets the keep-list; only manual, auto and plugin are counted', async ($, on) => {
-  const files: Record<string, string> = {}
+  const files = new Map<string, unknown>()
   const seen = stub(on, files, { tokensBefore: 312000, tokensAfter: 41000 })
   const run = (trigger: string, instructions?: string) =>
     ($.session.compact as (a: object) => Promise<unknown>)({ trigger, instructions, messages: [{ role: 'user', text: 's', toolUses: [] }] })
@@ -55,7 +62,7 @@ test('every trigger gets the keep-list; only manual, auto and plugin are counted
   await run('plugin')
   expect(seen.every((s) => s?.endsWith(KEEP_LIST))).toBe(true)
   await $.turn.complete({ turnId: 't', reason: 'done', answer: '', durationMs: 1, isAborted: false } as never)
-  const saved = JSON.parse(Object.values(files)[0])
+  const saved = recordOf(files)
   expect(saved.compactions).toEqual({ auto: 1, manual: 1, plugin: 1 })
 })
 
@@ -136,7 +143,7 @@ test('interactive: a new-task prompt is dropped, compacted from a timer, and res
 test('interactive: the timer compacts with the keep-list, counts it, then resubmits', opts, async ($, on) => {
   const clock = mock.clock(on)
   const state = new Map<string, unknown>()
-  const files: Record<string, string> = {}
+  const files = new Map<string, unknown>()
   const seen = stub(on, files, { tokensBefore: 120000, tokensAfter: 9000 }, state)
   const sent: string[] = []
   on('prompt.submit', async (_$, e) => (sent.push(e.text), { text: e.text }))
@@ -153,7 +160,7 @@ test('interactive: the timer compacts with the keep-list, counts it, then resubm
 test('turn-end compaction runs once from the timer, is counted as plugin, and sets the event', opts, async ($, on) => {
   const clock = mock.clock(on)
   const state = new Map<string, unknown>()
-  const files: Record<string, string> = {}
+  const files = new Map<string, unknown>()
   const seen = stub(on, files, { tokensBefore: 250000, tokensAfter: 20000 }, state)
   await step($, on, 250000) // at or over the hard limit: compacts whatever the task state
   await done($)
@@ -163,7 +170,7 @@ test('turn-end compaction runs once from the timer, is counted as plugin, and se
   expect(seen).toEqual([KEEP_LIST])
   expect(state.get('event')).toEqual({ kind: 'compacted', before: 250000, after: 20000 })
   await done($)
-  expect(JSON.parse(Object.values(files)[0]).compactions.plugin).toBe(1)
+  expect(recordOf(files).compactions.plugin).toBe(1)
 })
 
 test('a rejected turn-end compaction is retried before the next prompt', opts, async ($, on) => {
@@ -350,14 +357,14 @@ test('after a rejected prompt-path compaction the next prompt is not dropped', o
 })
 
 test('a subagent compaction gets no keep-list and is not counted', opts, async ($, on) => {
-  const files: Record<string, string> = {}
+  const files = new Map<string, unknown>()
   const state = new Map<string, unknown>()
   const seen = stub(on, files, { tokensBefore: 90000, tokensAfter: 5000 }, state)
   await ($.session.compact as (a: object) => Promise<unknown>)({ trigger: 'auto', agentId: 'a1', instructions: 'mine', messages: [{ role: 'user', text: 's', toolUses: [] }] })
   expect(seen[0]).toBe('mine')
   expect(state.get('event')).toBe(undefined)
   await done($)
-  expect(JSON.parse(Object.values(files)[0]).compactions).toEqual({ auto: 0, manual: 0, plugin: 0 })
+  expect(recordOf(files).compactions).toEqual({ auto: 0, manual: 0, plugin: 0 })
 })
 
 test('an aborted turn never triggers a turn-end compaction', opts, async ($, on) => {
@@ -404,7 +411,7 @@ for (const [name, ctx, hard] of [['soft', 120000, false], ['hard', 250000, true]
 const ARROW = '→'
 const DOT = '·'
 const lines = (seen: unknown): string[] => logsOf(seen).map((l) => JSON.parse(l)).map((e) => e.text ?? e.message ?? e.line ?? JSON.stringify(e)).filter((t: string) => t.startsWith('compacted'))
-const logOf = (files: Record<string, string>) => JSON.parse(Object.values(files)[0]).compactionLog
+const logOf = (files: Map<string, unknown>) => recordOf(files).compactionLog
 
 async function runTurnEnd($: any, on: any, ctx: number, commit: boolean) {
   const clock = mock.clock(on)
@@ -418,7 +425,7 @@ async function runTurnEnd($: any, on: any, ctx: number, commit: boolean) {
 }
 
 test('a turn-end compaction after a commit logs task-done with sizes and one transcript line', soft, async ($, on) => {
-  const files: Record<string, string> = {}
+  const files = new Map<string, unknown>()
   const seen = stub(on, files, { tokensBefore: 312000, tokensAfter: 41999 })
   await runTurnEnd($, on, 200000, true)
   expect(logOf(files)).toEqual([expect.objectContaining({ trigger: 'plugin', reason: 'task-done', before: 312000, after: 41999 })])
@@ -426,7 +433,7 @@ test('a turn-end compaction after a commit logs task-done with sizes and one tra
 })
 
 test('crossing the hard limit logs hard-limit', soft, async ($, on) => {
-  const files: Record<string, string> = {}
+  const files = new Map<string, unknown>()
   stub(on, files, { tokensBefore: 320000, tokensAfter: 20000 })
   await runTurnEnd($, on, 320000, false)
   expect(logOf(files)[0]).toMatchObject({ trigger: 'plugin', reason: 'hard-limit' })
@@ -434,7 +441,7 @@ test('crossing the hard limit logs hard-limit', soft, async ($, on) => {
 
 test('the new-task path logs new-task; a missing size reads without the arrow', opts, async ($, on) => {
   const clock = mock.clock(on)
-  const files: Record<string, string> = {}
+  const files = new Map<string, unknown>()
   const seen = stub(on, files, {})
   on('prompt.submit', async (_$, e) => ({ text: e.text }))
   await session($, on, true)
@@ -450,12 +457,10 @@ test('the new-task path logs new-task; a missing size reads without the arrow', 
 
 test('a retry after a rejected compaction logs retry', opts, async ($, on) => {
   const clock = mock.clock(on)
-  const files: Record<string, string> = {}
+  const files = new Map<string, unknown>()
   on('session.id', async () => ({ value: 'sc1' }))
   on('session.cwd', async () => ({ value: '/w/p' }))
-  on('env.get', async (_$, e) => ({ value: e.name === 'CLAUDE_CONFIG_DIR' ? '/cfg' : undefined }))
-  on('fs.read', async () => ({ deny: 'ENOENT' }))
-  on('fs.write', async (_$, e) => ((files[e.path] = e.text), { value: undefined }))
+  storeStub(on, files)
   on('turn.complete', async () => ({ text: '' }))
   stepStub(on)
   on('ui.log', async () => ({ value: undefined }))
@@ -481,7 +486,7 @@ test('a retry after a rejected compaction logs retry', opts, async ($, on) => {
 })
 
 test('the band button logs button; /compact and auto log manual and auto', async ($, on) => {
-  const files: Record<string, string> = {}
+  const files = new Map<string, unknown>()
   const state = new Map<string, unknown>([['event', { kind: 'ask-compact', hard: true }]])
   const seen = stub(on, files, { tokensBefore: 100000, tokensAfter: 5000 }, state)
   on('ui.render', async () => ({ type: 'Box', props: {}, children: [] }) as never)
@@ -501,7 +506,7 @@ test('the band button logs button; /compact and auto log manual and auto', async
 
 test('the logged reason is the one decided at turn end, even if the context changes before the timer', soft, async ($, on) => {
   const clock = mock.clock(on)
-  const files: Record<string, string> = {}
+  const files = new Map<string, unknown>()
   stub(on, files, { tokensBefore: 200000, tokensAfter: 20000 })
   on('tool.call', async () => ({ result: {} }) as never)
   await step($, on, 200000)
@@ -516,13 +521,11 @@ test('the logged reason is the one decided at turn end, even if the context chan
 
 test("the engine running the mod's own compaction through its hook counts it once", soft, async ($, on) => {
   const clock = mock.clock(on)
-  const files: Record<string, string> = {}
+  const files = new Map<string, unknown>()
   const logs: string[] = []
   on('session.id', async () => ({ value: 'sc1' }))
   on('session.cwd', async () => ({ value: '/w/p' }))
-  on('env.get', async (_$, e) => ({ value: e.name === 'CLAUDE_CONFIG_DIR' ? '/cfg' : undefined }))
-  on('fs.read', async () => ({ deny: 'ENOENT' }))
-  on('fs.write', async (_$, e) => ((files[e.path] = e.text), { value: undefined }))
+  storeStub(on, files)
   on('turn.complete', async () => ({ text: '' }))
   stepStub(on)
   on('ui.log', async (_$, e) => (logs.push(JSON.stringify(e)), { value: undefined }))
@@ -546,7 +549,7 @@ test("the engine running the mod's own compaction through its hook counts it onc
   release()
   await clock.settle()
   await done($)
-  const saved = JSON.parse(Object.values(files)[0])
+  const saved = recordOf(files)
   expect(saved.compactions).toEqual({ auto: 0, manual: 0, plugin: 1 })
   expect(saved.compactionLog.map((e: any) => e.reason)).toEqual(['hard-limit'])
   expect(seen[1]).toBe(KEEP_LIST) // the keep-list is not added twice

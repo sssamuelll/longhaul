@@ -1,9 +1,7 @@
-import type { EngineInterface } from 'claude-code'
 import type { Config } from './config'
-import { listRecords, totalCost, dataDir, type SessionRecord } from './ledger'
+import { totalCost, type SessionRecord } from './ledger'
 import { PRICES_AS_OF, type Bucket } from './prices'
 import { parseReset, SEP } from './budget'
-import { fail } from './session'
 import { REASON_LABEL } from './compact'
 import type { CompactReason } from './ledger'
 
@@ -249,94 +247,13 @@ export function renderText(d: ReportData): string {
   return out.join('\n')
 }
 
-const esc = (s: string): string =>
-  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
-
-export function renderHtml(d: ReportData): string {
-  const body = d.sections
-    .map((s) => {
-      const lines = s.lines.map((l) => `<p${l.kind === 'sub' ? ' class="sub"' : ''}>${esc(l.text)}</p>`)
-      return `<section><h2>${esc(s.title)}</h2>${lines.join('')}</section>`
-    })
-    .join('\n')
-  return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>longhaul report</title>
-<style>
-:root{--bg:#fbfaf8;--fg:#1d1b19;--dim:#6b6560;--line:#e2ded8}
-@media (prefers-color-scheme: dark){:root{--bg:#161412;--fg:#ece8e3;--dim:#9a938b;--line:#2e2a26}}
-body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,sans-serif}
-main{max-width:42rem;margin:0 auto;padding:2rem 1rem}
-h1{font-size:1.5rem;margin:0 0 1.5rem}
-h2{font-size:1.1rem;margin:1.5rem 0 .5rem;border-bottom:1px solid var(--line);padding-bottom:.25rem}
-p{margin:.25rem 0}
-p.sub{margin-left:1.5rem;color:var(--dim)}
-footer{margin-top:2rem;color:var(--dim);font-size:.875rem}
-</style></head>
-<body><main><h1>longhaul report</h1>
-${body}
-<footer>${esc(d.footer)}</footer></main></body></html>
-`
-}
-
 // Servers whose tools exist but were never called this week, as "name (N tools)".
-async function unusedServers($: EngineInterface, week: SessionRecord[]): Promise<string[]> {
+export function unusedServers(toolNames: string[], week: SessionRecord[]): string[] {
   const tools = new Map<string, number>()
-  for (const t of await $.tool.list()) {
-    const m = /^mcp__(.+?)__/.exec(t.name)
+  for (const name of toolNames) {
+    const m = /^mcp__(.+?)__/.exec(name)
     if (m && m[1] !== 'longhaul') tools.set(m[1], (tools.get(m[1]) ?? 0) + 1)
   }
   const called = new Set(week.flatMap((r) => Object.entries(r.mcpCalls).filter(([, n]) => n > 0).map(([s]) => s)))
   return [...tools].filter(([s]) => !called.has(s)).map(([s, n]) => `${s} (${plural(n, 'tool')})`)
-}
-
-async function reportFor($: EngineInterface, cfg: Config): Promise<ReportData> {
-  const now = await $.clock.now()
-  const records = await listRecords($, now - 21 * DAY)
-  let unused: string[] = []
-  try {
-    unused = await unusedServers($, windowOf(records, now).week)
-  } catch (err) {
-    fail($, 'list tools for report', err)
-  }
-  return buildReport(records, now, unused, cfg)
-}
-
-async function open($: EngineInterface, path: string): Promise<boolean> {
-  const win = (await $.env.get('OS')) === 'Windows_NT'
-  if (win) {
-    try {
-      await $.process.run(['explorer.exe', path.replace(/\//g, '\\')]) // exits 1 even on success: not checked
-      return true
-    } catch {
-      return false
-    }
-  }
-  try {
-    if ((await $.process.run(['open', path])).exitCode === 0) return true // macOS
-  } catch {
-    // not macOS: try xdg-open
-  }
-  try {
-    return (await $.process.run(['xdg-open', path])).exitCode === 0
-  } catch {
-    return false
-  }
-}
-
-export async function runReport($: EngineInterface, cfg: Config, args: string): Promise<{ text: string }> {
-  const d = await reportFor($, cfg)
-  if (args.trim().toLowerCase() !== 'page') return { text: renderText(d) }
-  const path = `${await dataDir($)}/report.html`
-  await $.fs.write(path, renderHtml(d))
-  const opened = await open($, path)
-  return { text: opened ? `Report page opened: ${path}` : `Report page written to ${path}. Open the file yourself.` }
-}
-
-export async function registerReport($: EngineInterface): Promise<void> {
-  try {
-    await $.command.register({ name: 'longhaul', description: "Where this week's tokens went and why", argumentHint: '[page|health]' })
-  } catch (err) {
-    fail($, 'register longhaul command', err)
-  }
 }
