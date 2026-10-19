@@ -1,6 +1,25 @@
+<div align="center">
+
+<img src=".claude-plugin/icon.png" width="88" alt="">
+
 # longhaul
 
 A Claude Code mod that helps Pro and Max subscribers make the weekly usage limit last.
+
+[![version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fsssamuelll%2Flonghaul%2Fmain%2F.claude-plugin%2Fplugin.json&query=%24.version&label=version&color=4FBFAF)](.claude-plugin/plugin.json)
+[![licence](https://img.shields.io/github/license/sssamuelll/longhaul?color=A58AE8)](LICENSE)
+[![telemetry](https://img.shields.io/badge/telemetry-none-D6B16E)](PRIVACY.md)
+
+[Install](#install) · [What it does](#what-it-does) · [Settings](#settings) · [Privacy](#privacy)
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/readme/hero-dark.gif">
+  <img src=".github/readme/hero-light.gif" width="100%" alt="A Claude Code session works through a plan, one commit per step. The meter above the prompt shows context, weekly use and today's use. After a commit past the soft limit, the conversation compacts from 184k to 66k tokens, and the plan, decisions and open items are kept.">
+</picture>
+
+<sub>An example session, drawn with the band's own code.</sub>
+
+</div>
 
 ## Install
 
@@ -39,8 +58,18 @@ Five jobs. The guard and classifier have three modes each: `auto` acts, `ask` as
 
    The built-in rules are in `hooks/rules.ts`. To use your own, write them to a JSON file and set `rules_file` to its absolute path. The file is an array of rules, each with an `id`, a `verdict` (`opus` or `sonnet`), a `pattern` and optionally `flags`. It is read once per session. If it is missing or broken, the built-in rules are used and a warning says so.
 3. **Meter.** One row right above the prompt, three small gauges in their own colours: context size against the hard limit, weekly use, and today's use against the daily allowance, then how far the week lasts at the current pace. Once a day, if today runs well ahead of the allowance, a calm line above it says how long the week lasts at this pace and where to look.
+
+   <picture>
+     <source media="(prefers-color-scheme: dark)" srcset=".github/readme/over-pace-dark.png">
+     <img src=".github/readme/over-pace-light.png" width="100%" alt="Above the prompt: today 18% of 11%, at this pace the week lasts to Thursday, /longhaul shows where it went. Under it, the meter: context 142k, week 63%, today 18% of 11%, lasts to Thursday.">
+   </picture>
 4. **Report.** Where the week's tokens went, and why. Biggest sessions, handoff outcomes, a Compactions section (how many, why, typical size before and after), and suggestions. It never edits your configuration.
 5. **Context health.** Once per session, after the first reply, it takes a free local estimate of what every session loads before any work: MCP tools per server, memory files and skills. It also finds long lines repeated across memory files. `/longhaul health` lists the items biggest first and says how to lighten them (`/mcp` to turn a server off for a project, shorten or split a memory file, keep repeated text in one file). At most once a week, a line above the prompt points to it when MCP tools you did not use this week or repeated text make up a large part of the start. Only paths, line counts and token estimates are kept, never file contents.
+
+   <picture>
+     <source media="(prefers-color-scheme: dark)" srcset=".github/readme/health-dark.png">
+     <img src=".github/readme/health-light.png" width="100%" alt="Above the prompt: sessions start at 68k, 24k of it is MCP tools unused this week, /longhaul health.">
+   </picture>
 
 ## Settings
 
