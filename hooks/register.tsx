@@ -508,6 +508,8 @@ async function compactThenSubmit($: EngineInterface, text: string, ep: number, r
   if (ep !== epoch()) return
   try {
     await $.prompt.submit({ text, asUser: true }) // skips this plugin's own prompt.submit hook
+    // the drop put the text back in the box; clear it unless the person has typed since
+    if ((await $.prompt.read()).text.trim() === text.trim()) await $.prompt.fill({ text: '' })
   } catch (err) {
     fail($, 'resubmit after compact', err)
     try {
