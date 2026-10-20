@@ -338,6 +338,31 @@ test('a failed resubmit puts the text back in the box and says so', opts, async 
   expect(logsOf(seen).some((l) => l.includes("couldn't resend your prompt; it's back in the box") && l.includes('transcript'))).toBe(true)
 })
 
+// Claude Code puts a dropped prompt back in the box; `typed` is what the person typed there after.
+async function resendWithBox($: any, on: any, typed?: string) {
+  const clock = mock.clock(on)
+  stub(on, {}, { tokensBefore: 120000, tokensAfter: 9000 })
+  let box = ''
+  on('prompt.submit', async (_$: any, e: any) => ({ text: e.text }))
+  on('prompt.read', async () => ({ value: { text: box, cursor: box.length } }) as never)
+  on('prompt.fill', async (_$: any, e: any) => ((box = e.text), { isFilled: true }) as never)
+  await session($, on, true)
+  await step($, on, 120000)
+  const r = await $.prompt.submit({ text: "what's next?" })
+  if (r.drop) box = typed ?? "what's next?"
+  await clock.advance(10)
+  await clock.settle()
+  return box
+}
+
+test('the resent prompt is cleared from the box', opts, async ($, on) => {
+  expect(await resendWithBox($, on)).toBe('')
+})
+
+test('a draft typed during the compaction stays in the box', opts, async ($, on) => {
+  expect(await resendWithBox($, on, 'and also the docs')).toBe('and also the docs')
+})
+
 test('after a rejected prompt-path compaction the next prompt is not dropped', opts, async ($, on) => {
   const clock = mock.clock(on)
   stub0(on)
