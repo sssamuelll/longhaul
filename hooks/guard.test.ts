@@ -5,13 +5,25 @@ const bash = (command: string, isError?: true) => ({ tool: 'Bash', input: { comm
 
 test('observeTool: commit and PR creation', async () => {
   expect(observeTool(emptyFacts(), bash('git commit -m x')).committed).toBe(true)
+  expect(observeTool(emptyFacts(), bash('git -C /repo commit -m x')).committed).toBe(true)
   expect(observeTool(emptyFacts(), bash('gh pr create --fill')).committed).toBe(true)
+  expect(observeTool(emptyFacts(), bash('gh pr merge 7 --squash')).committed).toBe(true)
   expect(observeTool(emptyFacts(), bash('git commit -m x', true)).committed).toBe(false)
   expect(observeTool(emptyFacts(), bash('git status')).committed).toBe(false)
 })
 
 test('observeTool: test runs', async () => {
-  for (const c of ['npm test', 'pytest -q', 'cargo test', 'claude plugin test .']) {
+  for (const c of [
+    'npm test',
+    'npm run test:unit',
+    'pnpm test:ci',
+    'pytest -q',
+    'uv run pytest',
+    'python -m pytest',
+    'npx vitest run',
+    'cargo test',
+    'claude plugin test .',
+  ]) {
     expect(observeTool(emptyFacts(), bash(c)).testsPassed).toBe(true)
     expect(observeTool(emptyFacts(), bash(c, true)).testsPassed).toBe(false)
   }

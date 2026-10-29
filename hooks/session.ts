@@ -7,7 +7,16 @@ export const setMainCtx = (n: number): void => void (lastMainCtx = n)
 // Bumped when a session starts or is cleared; timers scheduled earlier see it changed and do nothing.
 let epochN = 0
 export const epoch = (): number => epochN
-export const newEpoch = (): void => void (epochN++, (lastMainCtx = 0), (compactPending = false), (floorCtx = 0), (aboveSoftLogged = false))
+export const newEpoch = (): void =>
+  void (epochN++, (lastMainCtx = 0), (compactPending = false), (floorCtx = 0), (aboveSoftLogged = false), (epochFiles = []))
+
+// Files edited since the last compaction; passed into compaction instructions so multi-turn tasks keep their file list.
+let epochFiles: string[] = []
+export const getEpochFiles = (): string[] => epochFiles
+export const addEpochFiles = (files: string[]): void => {
+  for (const f of files) if (f && !epochFiles.includes(f)) epochFiles.push(f)
+}
+export const clearEpochFiles = (): void => void (epochFiles = [])
 
 // Context size right after the last compaction: the least the conversation can shrink to. The guard
 // does not compact again until the context has grown MIN_GAIN past it.

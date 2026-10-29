@@ -2,8 +2,8 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { BandEvent, Meter } from '../types/index'
 import { readConfig, type Config } from './config'
 import { contextOf } from './prices'
-import { KEEP_LIST, REASON_LABEL, withKeepList, setSoftLimit, getSoftLimit, declineAsk, resetDeclines, clearHardDecline, declines, isSelfCompacting, setSelfCompacting, type Compacted } from './compact'
-import { lastMainCtx, setMainCtx, setCompactPending, isCompactPending, setFloor, takeAboveSoftLog, newEpoch, epoch, peekRecord, setRecord, getFloor } from './session'
+import { KEEP_LIST, REASON_LABEL, withKeepList, buildCompactInstructions, setSoftLimit, getSoftLimit, declineAsk, resetDeclines, clearHardDecline, declines, isSelfCompacting, setSelfCompacting, type Compacted, type CompactContext } from './compact'
+import { lastMainCtx, setMainCtx, setCompactPending, isCompactPending, setFloor, takeAboveSoftLog, newEpoch, epoch, peekRecord, setRecord, getFloor, getEpochFiles, addEpochFiles, clearEpochFiles } from './session'
 import { emptyFacts, observeTool, isTaskDone, isNewTask, guardDecision, type TurnFacts } from './guard'
 import { addStep, capRecord, lastActivity, newRecord, parse, projectOf, totalCost, MAX_RATE, SESSION_PREFIX, type CompactReason, type SessionRecord } from './ledger'
 import { SEP, NOTICE_MCP, localDate, parseReset, pace } from './budget'
@@ -118,7 +118,13 @@ async function listRecords($: EngineInterface, sinceMs: number): Promise<Session
 async function switchTo($: EngineInterface, old: SessionRecord | null, id: string): Promise<SessionRecord> {
   if (old) await saveRecord($, old) // nothing in memory is discarded
   const cwd = await $.session.cwd()
-  const next = await loadRecord($, id, projectOf(cwd), Date.now())
+  let now = Date.now()
+  try {
+    now = await $.clock.now()
+  } catch {
+    // the wall clock will do
+  }
+  const next = await loadRecord($, id, projectOf(cwd), now)
   setRecord(next)
   return next
 }
@@ -172,6 +178,16 @@ async function clearBandOnPrompt($: EngineInterface): Promise<void> {
 
 // ---- compaction ----
 
+function snapshotCompactContext(reason?: CompactReason): CompactContext {
+  return {
+    reason,
+    editedFiles: getEpochFiles(),
+    committed: facts.committed,
+    testsPassed: facts.testsPassed,
+    editedAfterTests: facts.editedAfterTests,
+  }
+}
+
 // The one place a finished compaction is counted, drawn on the band and written back to the guard's
 // view of the context. The session.compact hook calls it for manual/auto; compactNow for the plugin's own.
 async function afterCompact($: EngineInterface, trigger: string, r: Compacted, reason?: CompactReason): Promise<void> {
@@ -200,6 +216,8 @@ async function afterCompact($: EngineInterface, trigger: string, r: Compacted, r
     // a note must not break the count
   }
   setCompactPending(false)
+  clearEpochFiles()
+  facts = emptyFacts()
   const after = typeof r.tokensAfter === 'number' ? r.tokensAfter : 0
   setMainCtx(after) // the next step re-measures
   setFloor(after)
@@ -220,11 +238,11 @@ async function afterCompact($: EngineInterface, trigger: string, r: Compacted, r
     await setEvent($, { kind: 'compacted', before: r.tokensBefore, after: r.tokensAfter })
 }
 
-async function compactNow($: EngineInterface, reason: CompactReason): Promise<void> {
+async function compactNow($: EngineInterface, reason: CompactReason, ctx?: CompactContext): Promise<void> {
   setSelfCompacting(true)
   let r: Compacted
   try {
-    r = await $.session.compact({ instructions: KEEP_LIST })
+    r = await $.session.compact({ instructions: buildCompactInstructions({ ...ctx, reason }) })
   } finally {
     setSelfCompacting(false)
   }
@@ -481,15 +499,16 @@ async function atTurnEnd($: EngineInterface, cfg: Config): Promise<string> {
   else if (act === 'compact-at-turn-end') {
     const ep = epoch()
     const reason: CompactReason = lastMainCtx >= cfg.hardLimit ? 'hard-limit' : 'task-done' // decided now, not when the timer fires
-    $.clock.after(0, () => void compactTimer($, ep, reason))
+    const snap = snapshotCompactContext(reason)
+    $.clock.after(0, () => void compactTimer($, ep, reason, snap))
   }
   return act
 }
 
-async function compactTimer($: EngineInterface, ep: number, reason: CompactReason): Promise<void> {
+async function compactTimer($: EngineInterface, ep: number, reason: CompactReason, ctx?: CompactContext): Promise<void> {
   if (ep !== epoch()) return
   try {
-    await compactNow($, reason)
+    await compactNow($, reason, ctx)
   } catch (err) {
     setCompactPending(true) // the next prompt compacts first
     fail($, 'compact at turn end', err)
@@ -497,10 +516,10 @@ async function compactTimer($: EngineInterface, ep: number, reason: CompactReaso
 }
 
 // Interactive new-task prompt: the hook has already returned { drop }; compact, then send the text again.
-async function compactThenSubmit($: EngineInterface, text: string, ep: number, reason: CompactReason): Promise<void> {
+async function compactThenSubmit($: EngineInterface, text: string, ep: number, reason: CompactReason, ctx?: CompactContext): Promise<void> {
   if (ep !== epoch()) return
   try {
-    await compactNow($, reason)
+    await compactNow($, reason, ctx)
   } catch (err) {
     fail($, 'compact before prompt', err)
   }
@@ -525,6 +544,7 @@ async function compactThenSubmit($: EngineInterface, text: string, ep: number, r
 // Never drops in a non-interactive session, or when `canDrop` is false; the turn-end path handles those.
 async function atPrompt($: EngineInterface, cfg: Config, text: string, canDrop: boolean): Promise<string | undefined> {
   const waiting = isCompactPending() && cfg.guardMode !== 'off'
+  const newTask = isNewTask(text, recent)
   const act = waiting
     ? 'compact-before-prompt'
     : guardDecision({
@@ -535,16 +555,18 @@ async function atPrompt($: EngineInterface, cfg: Config, text: string, canDrop: 
         hard: cfg.hardLimit,
         at: 'prompt',
         taskDone: false,
-        newTask: isNewTask(text, recent),
+        newTask,
         ...declines(),
       })
+  const prevSnap = snapshotCompactContext()
   recent = [...recent, text].slice(-3)
+  if (newTask) clearEpochFiles()
   facts = emptyFacts()
   resetDeclines()
   if (act !== 'compact-before-prompt' || !isInteractive || !canDrop) return undefined
   const ep = epoch()
   const reason: CompactReason = waiting ? 'retry' : lastMainCtx >= cfg.hardLimit ? 'hard-limit' : 'new-task'
-  $.clock.after(0, () => void compactThenSubmit($, text, ep, reason))
+  $.clock.after(0, () => void compactThenSubmit($, text, ep, reason, { ...prevSnap, reason }))
   return 'longhaul: compacting before the new task'
 }
 
@@ -572,7 +594,7 @@ export const register: Register = (on, options) => {
             label="Compact now"
             onPress={async () => {
               try {
-                await compactNow($, 'button')
+                await compactNow($, 'button', snapshotCompactContext('button'))
                 const now = await readEvent($)
                 if (now?.kind === 'ask-compact') await setEvent($, null)
               } catch (err) {
@@ -622,7 +644,10 @@ export const register: Register = (on, options) => {
   on('tool.call', async ($, e, next) => {
     const r = await next(e)
     try {
-      if (!e.agentId && !('deny' in r && r.deny)) facts = observeTool(facts, { tool: e.tool, input: e.input as Record<string, unknown>, ...('isError' in r && r.isError ? { isError: true as const } : {}) })
+      if (!e.agentId && !('deny' in r && r.deny)) {
+        facts = observeTool(facts, { tool: e.tool, input: e.input as Record<string, unknown>, ...('isError' in r && r.isError ? { isError: true as const } : {}) })
+        addEpochFiles(facts.editedFiles)
+      }
       if (!('deny' in r && r.deny)) {
         const rec = await current($)
         noteEdit(rec, { tool: e.tool, input: e.input, ...(e.agentId ? { agentId: e.agentId } : {}) })
@@ -723,9 +748,10 @@ export const register: Register = (on, options) => {
 
   on('session.compact', async ($, e, next) => {
     if (e.agentId || isSelfCompacting()) return next(e) // a subagent's, or the mod's own: no keep-list, not counted here
-    const r = await next({ ...e, instructions: withKeepList(e.instructions) })
+    const reason: CompactReason | undefined = e.trigger === 'manual' || e.trigger === 'auto' ? e.trigger : undefined
+    const r = await next({ ...e, instructions: withKeepList(e.instructions, snapshotCompactContext(reason)) })
     try {
-      await afterCompact($, e.trigger, r, e.trigger === 'manual' || e.trigger === 'auto' ? e.trigger : undefined)
+      await afterCompact($, e.trigger, r, reason)
     } catch (err) {
       fail($, 'session.compact', err)
     }

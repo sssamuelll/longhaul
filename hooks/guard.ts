@@ -16,9 +16,9 @@ export const emptyFacts = (): TurnFacts => ({
   editedFiles: [],
 })
 
-const COMMIT = /\bgit\s+commit\b|\bgh\s+pr\s+create\b/
+const COMMIT = /\bgit\s+(?:-C\s+\S+\s+)?commit\b|\bgh\s+pr\s+(?:create|merge)\b/
 const TEST_RUN =
-  /\b(npm|pnpm|yarn|bun)\s+(run\s+)?test\b|\bpytest\b|\bcargo\s+test\b|\bgo\s+test\b|\bvitest\b|\bjest\b|\bclaude\s+plugin\s+test\b/
+  /\b(npm|pnpm|yarn|bun)\s+(run\s+)?test(?::\S+)?\b|\b(?:npx\s+|uv\s+run\s+|python3?\s+-m\s+)?(?:pytest|vitest|jest)\b|\bcargo\s+test\b|\bgo\s+test\b|\bclaude\s+plugin\s+test\b/
 const EDIT_TOOLS = ['Edit', 'Write', 'MultiEdit']
 
 export function observeTool(
