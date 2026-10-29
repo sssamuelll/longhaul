@@ -1,11 +1,41 @@
 import { test, expect, mock } from 'claude-code/testing'
-import { KEEP_LIST, withKeepList } from './compact'
+import { KEEP_LIST, DROP_LIST, withKeepList, buildCompactInstructions } from './compact'
 
-test('withKeepList appends the keep-list to any instructions', async () => {
+test('withKeepList appends the keep-list to any instructions and is idempotent', async () => {
   expect(withKeepList(undefined)).toBe(KEEP_LIST)
   const s = withKeepList('focus on auth')
   expect(s.startsWith('focus on auth')).toBe(true)
   expect(s.endsWith(KEEP_LIST)).toBe(true)
+  expect(withKeepList(s)).toBe(s)
+})
+
+test('buildCompactInstructions adapts to task boundaries, hard limits, and session state', async () => {
+  expect(buildCompactInstructions()).toBe(KEEP_LIST)
+  expect(buildCompactInstructions({ reason: 'task-done', editedFiles: [] })).toBe(KEEP_LIST)
+
+  const done = buildCompactInstructions({
+    reason: 'task-done',
+    editedFiles: ['src/a.ts', 'src/b.ts', 'src/a.ts'],
+    committed: true,
+    testsPassed: true,
+  })
+  expect(done).toContain('The previous task is complete: collapse its finished work to a one-line outcome')
+  expect(done).toContain('files edited (src/a.ts, src/b.ts)')
+  expect(done).toContain('changes committed')
+  expect(done).toContain('tests passing')
+  expect(done).toContain(DROP_LIST)
+  expect(done.endsWith(KEEP_LIST)).toBe(true)
+
+  const hard = buildCompactInstructions({
+    reason: 'hard-limit',
+    editedFiles: ['src/c.ts'],
+    testsPassed: true,
+    editedAfterTests: true,
+  })
+  expect(hard).toContain('Mid-task compaction at the context limit: preserve the active hypothesis')
+  expect(hard).toContain('files edited since last passing test run')
+  expect(hard).toContain(DROP_LIST)
+  expect(hard.endsWith(KEEP_LIST)).toBe(true)
 })
 
 // The plugin store, in memory: the session record lives under session:<id>.
@@ -173,6 +203,28 @@ test('turn-end compaction runs once from the timer, is counted as plugin, and se
   expect(recordOf(files).compactions.plugin).toBe(1)
 })
 
+test('multi-turn task preserves edited files across in-task prompts and passes them to compaction', opts, async ($, on) => {
+  const clock = mock.clock(on)
+  const seen = stub(on, {}, { tokensBefore: 180000, tokensAfter: 22000 })
+  on('tool.call', async () => ({ result: {} }) as never)
+  on('prompt.submit', async (_$, e) => ({ text: e.text }))
+  await session($, on, true)
+  await step($, on, 90000)
+  await $.tool.call({ tool: 'Edit', input: { file_path: 'src/guard.ts' } })
+  await done($)
+  await $.prompt.submit({ text: 'also update compact.ts and commit' })
+  await step($, on, 160000)
+  await $.tool.call({ tool: 'Write', input: { file_path: 'src/compact.ts' } })
+  await $.tool.call({ tool: 'Bash', input: { command: 'git commit -m "update"' } })
+  await done($)
+  await clock.advance(10)
+  await clock.settle()
+  expect(seen.length).toBe(1)
+  expect(seen[0]).toContain('files edited (src/guard.ts, src/compact.ts)')
+  expect(seen[0]).toContain('changes committed')
+  expect(seen[0]?.endsWith(KEEP_LIST)).toBe(true)
+})
+
 test('a rejected turn-end compaction is retried before the next prompt', opts, async ($, on) => {
   const clock = mock.clock(on)
   const sent: string[] = []
@@ -284,6 +336,7 @@ test('a compaction that lands near the soft limit does not compact again until 5
   await clock.settle()
   expect(seen.length).toBe(1)
   await step($, on, 210000)
+  await bash($, 'git commit -m y')
   await done($)
   await clock.advance(10)
   await clock.settle()
