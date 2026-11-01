@@ -210,12 +210,12 @@ test('multi-turn task preserves edited files across in-task prompts and passes t
   on('prompt.submit', async (_$, e) => ({ text: e.text }))
   await session($, on, true)
   await step($, on, 90000)
-  await $.tool.call({ tool: 'Edit', input: { file_path: 'src/guard.ts' } })
+  await $.tool.call({ tool: 'Edit', file_path: 'src/guard.ts' })
   await done($)
   await $.prompt.submit({ text: 'also update compact.ts and commit' })
   await step($, on, 160000)
-  await $.tool.call({ tool: 'Write', input: { file_path: 'src/compact.ts' } })
-  await $.tool.call({ tool: 'Bash', input: { command: 'git commit -m "update"' } })
+  await $.tool.call({ tool: 'Write', file_path: 'src/compact.ts' })
+  await $.tool.call({ tool: 'Bash', command: 'git commit -m "update"' })
   await done($)
   await clock.advance(10)
   await clock.settle()
@@ -311,7 +311,7 @@ test('session.start and /clear reset the guard and silence pending timers', opts
 
 // ---- final-review fixes ----
 
-const bash = ($: any, command: string) => $.tool.call({ tool: 'Bash', input: { command } })
+const bash = ($: any, command: string) => $.tool.call({ tool: 'Bash', command })
 const soft = { options: { guard_mode: 'auto', soft_limit: 150000, hard_limit: 300000 } }
 const logsOf = (seen: unknown): string[] => (seen as { logs: string[] }).logs
 

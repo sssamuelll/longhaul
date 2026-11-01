@@ -76,7 +76,7 @@ test('review tool records the outcome on the latest pending decision', async ($,
   stub(on, 'claude-opus-5-5', store)
   await start($)
   await $.prompt.submit({ text: 'find the login handler' })
-  const call = (outcome: string) => ($.tool.call as any)({ tool: 'mcp__longhaul__review', input: { outcome } })
+  const call = (outcome: string) => ($.tool.call as any)({ tool: 'mcp__longhaul__review', outcome })
   const r = await call('fixed')
   expect(r.result).toBe('recorded')
   await $.turn.complete({ turnId: 't', reason: 'done', answer: '', durationMs: 1, isAborted: false } as never)
