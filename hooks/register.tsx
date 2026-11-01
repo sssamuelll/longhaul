@@ -641,16 +641,18 @@ export const register: Register = (on, options) => {
     return r
   })
 
+  // The engine spreads a tool's arguments beside `tool` in the event (`e.command` for Bash), so the event is the input.
   on('tool.call', async ($, e, next) => {
     const r = await next(e)
     try {
+      const input = e as unknown as Record<string, unknown>
       if (!e.agentId && !('deny' in r && r.deny)) {
-        facts = observeTool(facts, { tool: e.tool, input: e.input as Record<string, unknown>, ...('isError' in r && r.isError ? { isError: true as const } : {}) })
+        facts = observeTool(facts, { tool: e.tool, input, ...('isError' in r && r.isError ? { isError: true as const } : {}) })
         addEpochFiles(facts.editedFiles)
       }
       if (!('deny' in r && r.deny)) {
         const rec = await current($)
-        noteEdit(rec, { tool: e.tool, input: e.input, ...(e.agentId ? { agentId: e.agentId } : {}) })
+        noteEdit(rec, { tool: e.tool, input, ...(e.agentId ? { agentId: e.agentId } : {}) })
       }
       const m = /^mcp__(.+?)__/.exec(e.tool)
       if (m) {
@@ -666,7 +668,7 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: REVIEW_TOOL }, async ($, e) => {
     try {
       const rec = await current($)
-      return applyReview(rec, e.input)
+      return applyReview(rec, e)
     } catch (err) {
       fail($, 'review', err)
       return { deny: 'longhaul: could not record the outcome.' }

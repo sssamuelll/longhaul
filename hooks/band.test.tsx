@@ -122,7 +122,7 @@ for (const [name, hard, ctx] of [['hard', true, 250000], ['soft', false, 120000]
     stub(on, null, seen)
     ctxNow = ctx
     await turnEnd($, on, true)
-    if (!hard) await ($.tool.call as any)({ tool: 'Bash', input: { command: 'git commit -m x' } })
+    if (!hard) await ($.tool.call as any)({ tool: 'Bash', command: 'git commit -m x' })
     if (!hard) await turnEnd($, on, false)
     expect(seen.state.get('event')).toEqual({ kind: 'ask-compact', hard })
     await (await $.ui.mount({ plugin: 'longhaul', surface: 'terminal', component: 'AbovePrompt', props })).press({ key: 'later' })
