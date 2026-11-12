@@ -1,0 +1,11 @@
+{
+  "name": "longhaul",
+  "version": "0.2.3",
+  "description": "Smart compaction checkpoints between tasks, lighter subagent delegation, and startup context health.",
+  "license": "MIT",
+  "author": {
+    "name": "Samuel Ballesteros"
+  },
+  "repository": "https://github.com/sssamuelll/longhaul",
+  "homepage": "https://github.com/sssamuelll/longhaul"
+}

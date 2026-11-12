@@ -307,6 +307,32 @@ class AntigravityHookTests(unittest.TestCase):
         roots = antigravity.candidate_roots(["/mnt/c/Users/nonexistent_test_user/work/repo"])
         self.assertIsInstance(roots, list)
 
+    def test_plugin_data_state_dir_and_payload_hook_event_name(self) -> None:
+        pdata = self.root / "plugin-data"
+        pdata.mkdir()
+        env = os.environ.copy()
+        env.pop("LONGHAUL_AGY_STATE", None)
+        env["HOME"] = str(self.root / "clean-home")
+        env["PLUGIN_DATA"] = str(pdata)
+        env["AGY_APP_DATA_DIR"] = str(self.app_data)
+        proc = subprocess.run(
+            [sys.executable, str(HOOK_SCRIPT)],
+            input=json.dumps({
+                "conversationId": "p1",
+                "hookEventName": "PreInvocation",
+                "lastUserInput": "longhaul",
+                "workspacePaths": [str(self.ws)],
+            }),
+            text=True,
+            capture_output=True,
+            env=env,
+            check=True,
+        )
+        out = json.loads(proc.stdout)
+        assert_no_panic_fields(self, out)
+        self.assertIn("longhaul report (Antigravity)", out["injectSteps"][0]["systemMessage"]["systemMessage"])
+        self.assertTrue((pdata / "state.json").is_file())
+
 
 if __name__ == "__main__":
     unittest.main()

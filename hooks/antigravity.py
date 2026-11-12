@@ -167,7 +167,13 @@ def state_path() -> Path:
     override = os.environ.get("LONGHAUL_AGY_STATE")
     if override:
         return Path(override)
-    return Path.home() / ".cache" / "longhaul-antigravity-state.json"
+    legacy = Path.home() / ".cache" / "longhaul-antigravity-state.json"
+    plugin_data = os.environ.get("PLUGIN_DATA")
+    if plugin_data:
+        pdata_state = Path(plugin_data) / "state.json"
+        if pdata_state.exists() or not legacy.exists():
+            return pdata_state
+    return legacy
 
 
 def empty_facts() -> dict[str, Any]:
@@ -1028,8 +1034,8 @@ def main() -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-    event_type = sys.argv[1] if len(sys.argv) > 1 else "PreInvocation"
-    if event_type in ("PostToolUse", "PostInvocation", "Stop"):
+    cli_event = sys.argv[1] if len(sys.argv) > 1 else ""
+    if cli_event in ("PostToolUse", "PostInvocation", "Stop"):
         sys.stdout.write("{}\n")
         return
 
@@ -1040,6 +1046,11 @@ def main() -> None:
             payload = json.loads(raw)
         except Exception:
             pass
+
+    event_type = cli_event or str(payload.get("hookEventName") or "PreInvocation")
+    if event_type in ("PostToolUse", "PostInvocation", "Stop"):
+        sys.stdout.write("{}\n")
+        return
 
     now_ms = int(time.time() * 1000)
     conv_id = str(payload.get("conversationId") or "default")
