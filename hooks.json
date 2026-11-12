@@ -1,0 +1,18 @@
+{
+  "longhaul": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "python3 hooks/antigravity.py SessionStart || python hooks/antigravity.py SessionStart",
+        "timeout": 15
+      }
+    ],
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "python3 hooks/antigravity.py PreInvocation || python hooks/antigravity.py PreInvocation",
+        "timeout": 15
+      }
+    ]
+  }
+}
