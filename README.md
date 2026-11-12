@@ -35,6 +35,15 @@ Answer `y` to add the marketplace, then pick a scope. From a shell:
 claude plugin install longhaul --marketplace sssamuelll/longhaul
 ```
 
+In Google Antigravity (`agy`), with Python 3 on `PATH`:
+
+```
+git clone https://github.com/sssamuelll/longhaul
+agy plugin install ./longhaul
+```
+
+In Antigravity it runs through `hooks/antigravity.py`: it tracks context from `transcript.jsonl`, injects compaction checkpoints and subagent handoffs, and answers `longhaul` and `longhaul health` when sent as prompts. Antigravity does not expose the weekly plan meter or let a hook trigger `/compact` on its own, so the hook recommends `/compact` at clean boundaries instead.
+
 ## The problem
 
 These are one developer's own measurements, taken from their sessions over a day and a half and weighted by public API prices. Your numbers will differ.
