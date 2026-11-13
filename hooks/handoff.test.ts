@@ -87,12 +87,16 @@ test('review tool records the outcome on the latest pending decision', async ($,
 })
 
 const crowded = { options: { guard_mode: 'auto', soft_limit: 100000, hard_limit: 200000 } }
-const crowdedSetup = (on: any) =>
+// The first step is the session's start load; later ones are past the soft limit.
+const crowdedSetup = (on: any) => {
+  let n = 0
   on('turn.step', async function* () {
-    return { turnId: 't', index: 0, answer: '', toolUses: [], usage: { model: 'claude-opus-5-5', input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 120000, cache_creation_input_tokens: 0 } } as never
+    const ctx = n++ === 0 ? 10000 : 160000
+    return { turnId: 't', index: 0, answer: '', toolUses: [], usage: { model: 'claude-opus-5-5', input_tokens: 0, output_tokens: 0, cache_read_input_tokens: ctx, cache_creation_input_tokens: 0 } } as never
   })
+}
 async function crowdedStep($: any) {
-  for await (const _ of ($.turn.step as any)({ turnId: 't', index: 0, model: 'claude-opus-5-5', messageCount: 1 })) void _
+  for (let i = 0; i < 2; i++) for await (const _ of ($.turn.step as any)({ turnId: 't', index: 0, model: 'claude-opus-5-5', messageCount: 1 })) void _
 }
 
 test('a sonnet-verdict new-task prompt past the soft limit is not dropped and carries the handoff once', crowded, async ($, on) => {

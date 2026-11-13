@@ -3,7 +3,7 @@ import type { BandEvent, Meter } from '../types/index'
 import { readConfig, type Config } from './config'
 import { contextOf } from './prices'
 import { KEEP_LIST, REASON_LABEL, withKeepList, buildCompactInstructions, setSoftLimit, getSoftLimit, declineAsk, resetDeclines, clearHardDecline, declines, isSelfCompacting, setSelfCompacting, type Compacted, type CompactContext } from './compact'
-import { lastMainCtx, setMainCtx, setCompactPending, isCompactPending, setFloor, takeAboveSoftLog, newEpoch, epoch, peekRecord, setRecord, getFloor, getEpochFiles, addEpochFiles, clearEpochFiles } from './session'
+import { lastMainCtx, setMainCtx, setCompactPending, isCompactPending, setFloor, takeAboveSoftLog, newEpoch, epoch, peekRecord, setRecord, getFloor, getEpochFiles, addEpochFiles, clearEpochFiles, getStartCtx, markFloorPending, notePrompt, measureStep } from './session'
 import { emptyFacts, observeTool, isTaskDone, isNewTask, guardDecision, type TurnFacts } from './guard'
 import { addStep, capRecord, lastActivity, newRecord, parse, projectOf, totalCost, MAX_RATE, SESSION_PREFIX, type CompactReason, type SessionRecord } from './ledger'
 import { SEP, NOTICE_MCP, localDate, parseReset, pace } from './budget'
@@ -218,22 +218,17 @@ async function afterCompact($: EngineInterface, trigger: string, r: Compacted, r
   setCompactPending(false)
   clearEpochFiles()
   facts = emptyFacts()
-  const after = typeof r.tokensAfter === 'number' ? r.tokensAfter : 0
-  setMainCtx(after) // the next step re-measures
+  // Claude Code's tokensAfter counts the summary only; the start load comes back on top of it.
+  const after = getStartCtx() + (typeof r.tokensAfter === 'number' ? r.tokensAfter : 0)
+  setMainCtx(after) // an estimate until the next step measures it
   setFloor(after)
+  markFloorPending()
   if (typeof r.tokensAfter === 'number')
     try {
       await refreshMeter($) // the gauge shows the new size now, not at the next turn end
     } catch (err) {
       fail($, 'meter after compact', err)
     }
-  if (after > getSoftLimit() && takeAboveSoftLog()) {
-    try {
-      $.ui.log('the conversation is still above the soft limit after compacting; raise soft_limit or trim CLAUDE.md and MCP servers', { to: 'transcript' })
-    } catch {
-      // a note must not break the count
-    }
-  }
   if (typeof r.tokensBefore === 'number' && typeof r.tokensAfter === 'number')
     await setEvent($, { kind: 'compacted', before: r.tokensBefore, after: r.tokensAfter })
 }
@@ -488,6 +483,7 @@ async function atTurnEnd($: EngineInterface, cfg: Config): Promise<string> {
     mode: cfg.guardMode,
     ctx: lastMainCtx,
     floor: getFloor(),
+    startCtx: getStartCtx(),
     soft: cfg.softLimit,
     hard: cfg.hardLimit,
     at: 'turn-end',
@@ -551,6 +547,7 @@ async function atPrompt($: EngineInterface, cfg: Config, text: string, canDrop: 
         mode: cfg.guardMode,
         ctx: lastMainCtx,
         floor: getFloor(),
+        startCtx: getStartCtx(),
         soft: cfg.softLimit,
         hard: cfg.hardLimit,
         at: 'prompt',
@@ -566,7 +563,7 @@ async function atPrompt($: EngineInterface, cfg: Config, text: string, canDrop: 
   if (act !== 'compact-before-prompt' || !isInteractive || !canDrop) return undefined
   const ep = epoch()
   const reason: CompactReason = waiting ? 'retry' : lastMainCtx >= cfg.hardLimit ? 'hard-limit' : 'new-task'
-  $.clock.after(0, () => void compactThenSubmit($, text, ep, reason, { ...prevSnap, reason }))
+  $.clock.after(0, () => void compactThenSubmit($, text, ep, reason, { ...prevSnap, reason, nextPrompt: text }))
   return 'longhaul: compacting before the new task'
 }
 
@@ -633,7 +630,13 @@ export const register: Register = (on, options) => {
         const sub = Boolean(e.agentId)
         const rec = await current($)
         addStep(rec, r.usage.model, r.usage, sub)
-        if (!sub) setMainCtx(contextOf(r.usage))
+        if (!sub) {
+          const ctx = contextOf(r.usage)
+          setMainCtx(ctx)
+          const floor = measureStep(ctx)
+          if (floor !== undefined && floor > cfg.softLimit && takeAboveSoftLog())
+            $.ui.log('the conversation is still above the soft limit after compacting; raise soft_limit or trim CLAUDE.md and MCP servers', { to: 'transcript' })
+        }
       }
     } catch (err) {
       fail($, 'turn.step', err)
@@ -711,6 +714,7 @@ export const register: Register = (on, options) => {
   on('prompt.submit', async ($, e, next) => {
     // other plugins' prompts, commands and meta prompts pass untouched
     if (e.command || e.isMeta || e.turnId || e.origin?.kind === 'plugin') return next(e)
+    notePrompt(e.text?.length ?? 0) // the next step carries it; the guard's measures take it off
     // classify first: a handoff prompt is never held back, its compaction waits for the turn end
     const note = await handoffContext($, cfg, e.text)
     let drop: string | undefined
@@ -751,7 +755,10 @@ export const register: Register = (on, options) => {
   on('session.compact', async ($, e, next) => {
     if (e.agentId || isSelfCompacting()) return next(e) // a subagent's, or the mod's own: no keep-list, not counted here
     const reason: CompactReason | undefined = e.trigger === 'manual' || e.trigger === 'auto' ? e.trigger : undefined
-    const r = await next({ ...e, instructions: withKeepList(e.instructions, snapshotCompactContext(reason)) })
+    // Claude Code's own compaction at or past the hard limit lands mid-task, like ours there;
+    // below it, it is idle compaction or a small auto-compact window.
+    const kind = e.trigger === 'auto' && lastMainCtx >= cfg.hardLimit ? 'hard-limit' : reason
+    const r = await next({ ...e, instructions: withKeepList(e.instructions, snapshotCompactContext(kind)) })
     try {
       await afterCompact($, e.trigger, r, reason)
     } catch (err) {

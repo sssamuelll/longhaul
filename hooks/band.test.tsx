@@ -116,14 +116,15 @@ async function turnEnd($: any, on: any, first: boolean) {
   await $.turn.complete({ turnId: 't', reason: 'done', answer: '', durationMs: 1, isAborted: false } as never)
 }
 
-for (const [name, hard, ctx] of [['hard', true, 250000], ['soft', false, 120000]] as const) {
+for (const [name, hard, ctx] of [['hard', true, 250000], ['soft', false, 160000]] as const) {
   test(`later on a ${name} ask is remembered by the guard`, ask, async ($, on) => {
     const seen = { compact: 0, state: new Map<string, unknown>() }
     stub(on, null, seen)
-    ctxNow = ctx
+    ctxNow = 10000 // the session's start load
     await turnEnd($, on, true)
+    ctxNow = ctx
     if (!hard) await ($.tool.call as any)({ tool: 'Bash', command: 'git commit -m x' })
-    if (!hard) await turnEnd($, on, false)
+    await turnEnd($, on, false)
     expect(seen.state.get('event')).toEqual({ kind: 'ask-compact', hard })
     await (await $.ui.mount({ plugin: 'longhaul', surface: 'terminal', component: 'AbovePrompt', props })).press({ key: 'later' })
     expect(seen.state.get('event')).toBe(null)

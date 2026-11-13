@@ -103,10 +103,24 @@ test('guardDecision', async () => {
   expect(d({ at: 'prompt', ctx: 310000 })).toBe('none')
 })
 
-test('guardDecision: no compaction for less than MIN_GAIN above the floor', async () => {
-  const base = { mode: 'auto', soft: 150_000, hard: 300_000, at: 'turn-end', taskDone: true, newTask: false, declinedThisTask: false, declinedHard: false } as const
-  expect(guardDecision({ ...base, ctx: 209_999, floor: 160_000 })).toBe('none')
-  expect(guardDecision({ ...base, ctx: 210_000, floor: 160_000 })).toBe('compact-at-turn-end')
-  expect(guardDecision({ ...base, ctx: 310_000, floor: 290_000 })).toBe('none')
-  expect(guardDecision({ ...base, ctx: 200_000 })).toBe('compact-at-turn-end')
+const gainBase = { mode: 'auto', soft: 150_000, hard: 300_000, at: 'turn-end', taskDone: true, newTask: false, declinedThisTask: false, declinedHard: false } as const
+
+test('guardDecision: a safe moment compacts only when it frees MIN_GAIN past the size it would shrink to', async () => {
+  // after a compaction: the measured floor
+  expect(guardDecision({ ...gainBase, ctx: 230_999, floor: 131_000 })).toBe('none')
+  expect(guardDecision({ ...gainBase, ctx: 231_000, floor: 131_000 })).toBe('compact-at-turn-end')
+  // before the first one: the start load plus a summary
+  expect(guardDecision({ ...gainBase, ctx: 233_999, startCtx: 89_000 })).toBe('none')
+  expect(guardDecision({ ...gainBase, ctx: 234_000, startCtx: 89_000 })).toBe('compact-at-turn-end')
+  expect(guardDecision({ ...gainBase, ctx: 234_000, startCtx: 89_000, at: 'prompt', newTask: true })).toBe('compact-before-prompt')
+  expect(guardDecision({ ...gainBase, ctx: 200_000, startCtx: 89_000, at: 'prompt', newTask: true })).toBe('none')
+})
+
+test('guardDecision: at the hard limit an estimate never blocks; only a context that cannot shrink is skipped', async () => {
+  const b = { ...gainBase, taskDone: false }
+  expect(guardDecision({ ...b, ctx: 300_000, startCtx: 215_000 })).toBe('compact-at-turn-end')
+  expect(guardDecision({ ...b, ctx: 300_000, floor: 215_000 })).toBe('compact-at-turn-end')
+  expect(guardDecision({ ...b, ctx: 309_999, floor: 290_000 })).toBe('none')
+  expect(guardDecision({ ...b, ctx: 310_000, floor: 290_000 })).toBe('compact-at-turn-end')
+  expect(guardDecision({ ...b, mode: 'ask', ctx: 300_000, startCtx: 215_000 })).toBe('ask')
 })
