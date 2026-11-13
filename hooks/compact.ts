@@ -1,7 +1,7 @@
 import type { CompactReason } from './ledger'
 
 export const KEEP_LIST =
-  'Keep, in this order: the current plan and its next step; the decisions made and why; the files touched; open items and failing tests; anything the user corrected or asked for in this session.'
+  "Keep, in this order: the current plan and its next step; the decisions made and why; the files touched; open items and failing tests; anything the user corrected or asked for in this session, quoting the user's rules and corrections word for word."
 
 export const DROP_LIST =
   'Drop raw tool outputs, file contents that can be re-read from disk, resolved errors, dead-end explorations, and play-by-play narration of completed steps.'
@@ -12,19 +12,25 @@ export type CompactContext = {
   committed?: boolean
   testsPassed?: boolean
   editedAfterTests?: boolean
+  nextPrompt?: string // the prompt held back until the compaction is done
 }
+
+const NEXT_PROMPT_MAX = 2000
 
 export function buildCompactInstructions(ctx?: CompactContext): string {
   if (!ctx) return KEEP_LIST
   const files = [...new Set((ctx.editedFiles ?? []).filter(Boolean))]
   const hasFacts = files.length > 0 || Boolean(ctx.committed) || Boolean(ctx.testsPassed)
-  if (!hasFacts) return KEEP_LIST
+  const next = ctx.nextPrompt?.trim() ?? ''
+  if (!hasFacts && !next && ctx.reason !== 'hard-limit') return KEEP_LIST
   const parts: string[] = []
-  if (ctx.reason === 'task-done' || ctx.reason === 'new-task') {
+  if (hasFacts && (ctx.reason === 'task-done' || ctx.reason === 'new-task')) {
     parts.push('The previous task is complete: collapse its finished work to a one-line outcome and drop intermediate steps.')
   } else if (ctx.reason === 'hard-limit') {
     parts.push('Mid-task compaction at the context limit: preserve the active hypothesis, the latest error or failing check, and the immediate next edit.')
   }
+  if (next)
+    parts.push(`The user's next message comes right after this summary; keep what it needs: """${next.length > NEXT_PROMPT_MAX ? `${next.slice(0, NEXT_PROMPT_MAX)}…` : next}"""`)
   const state: string[] = []
   if (files.length) state.push(`files edited (${files.join(', ')})`)
   if (ctx.committed) state.push('changes committed')
