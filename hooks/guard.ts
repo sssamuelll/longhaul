@@ -90,8 +90,14 @@ export function isNewTask(text: string, recent: string[]): boolean {
   return comparable.every((r) => [...w].filter((x) => r.has(x)).length / new Set([...w, ...r]).size < 0.1)
 }
 
-// A compaction must be able to free at least this much, or it is not worth its cost.
-export const MIN_GAIN = 50_000
+// At a safe moment a compaction must free at least this much. Below it, writing the summary and
+// re-caching the shrunken conversation usually cost more than the smaller context saves.
+export const MIN_GAIN = 100_000
+// At the hard limit any real gain is enough. This minimum only keeps a conversation that cannot
+// shrink from compacting at every turn end.
+export const HARD_MIN_GAIN = 20_000
+// What a summary and the messages kept with it add on top of the session's start load.
+export const SUMMARY_EST = 45_000
 
 export type GuardAction = 'none' | 'compact-before-prompt' | 'compact-at-turn-end' | 'ask'
 
@@ -105,9 +111,14 @@ export function guardDecision(i: {
   newTask: boolean
   declinedThisTask: boolean
   declinedHard: boolean
-  floor?: number // context right after the last compaction
+  floor?: number // context of the first step after the last compaction; 0 before the first one
+  startCtx?: number // what the session loads before any work, measured at its first step
 }): GuardAction {
-  if (i.mode === 'off' || i.ctx < i.soft || i.ctx - (i.floor ?? 0) < MIN_GAIN) return 'none'
+  if (i.mode === 'off' || i.ctx < i.soft) return 'none'
+  const floor = i.floor ?? 0
+  if (i.ctx >= i.hard) {
+    if (i.ctx - floor < HARD_MIN_GAIN) return 'none' // only a measured floor counts here, never an estimate
+  } else if (i.ctx - (floor || (i.startCtx ?? 0) + SUMMARY_EST) < MIN_GAIN) return 'none'
   if (i.at === 'prompt') return i.mode === 'auto' && i.newTask ? 'compact-before-prompt' : 'none'
   if (i.ctx >= i.hard) return i.mode === 'auto' ? 'compact-at-turn-end' : i.declinedHard ? 'none' : 'ask'
   if (!i.taskDone) return 'none'

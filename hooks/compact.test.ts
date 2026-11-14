@@ -36,6 +36,19 @@ test('buildCompactInstructions adapts to task boundaries, hard limits, and sessi
   expect(hard).toContain('files edited since last passing test run')
   expect(hard).toContain(DROP_LIST)
   expect(hard.endsWith(KEEP_LIST)).toBe(true)
+
+  // the hard limit is mid-task even when nothing was observed
+  expect(buildCompactInstructions({ reason: 'hard-limit' })).toContain('Mid-task compaction at the context limit')
+})
+
+test('the keep-list asks for the user rules word for word; a held prompt goes in, clipped', async () => {
+  expect(KEEP_LIST).toContain("quoting the user's rules and corrections word for word")
+  const next = buildCompactInstructions({ reason: 'new-task', nextPrompt: "  what's next? don't touch PRIVACY.md  " })
+  expect(next).toContain(`"""what's next? don't touch PRIVACY.md"""`)
+  expect(next.endsWith(KEEP_LIST)).toBe(true)
+  const long = buildCompactInstructions({ reason: 'new-task', nextPrompt: 'a'.repeat(3000) })
+  expect(long).toContain(`"""${'a'.repeat(2000)}…"""`)
+  expect(long).not.toContain('a'.repeat(2001))
 })
 
 // The plugin store, in memory: the session record lives under session:<id>.
@@ -134,7 +147,8 @@ test('auto mode does not compact a prompt that is not a new task', opts, async (
   const seen = stub(on, {}, {})
   on('prompt.submit', async (_$, e) => ({ text: e.text }))
   await session($, on, true)
-  await step($, on, 120000)
+  await step($, on, 10000) // the start load
+  await step($, on, 160000)
   const r = await $.prompt.submit({ text: 'fix the failing test please' })
   expect(seen.length).toBe(0)
   expect(r.drop).toBe(undefined)
@@ -145,7 +159,8 @@ test('a non-interactive session never drops a prompt', opts, async ($, on) => {
   const seen = stub(on, {}, {})
   on('prompt.submit', async (_$, e) => ({ text: e.text }))
   await session($, on, false)
-  await step($, on, 120000)
+  await step($, on, 10000) // the start load
+  await step($, on, 160000)
   const r = await $.prompt.submit({ text: "what's next?" })
   await clock.advance(1000)
   expect(r.text).toBe("what's next?")
@@ -161,7 +176,8 @@ test('interactive: a new-task prompt is dropped, compacted from a timer, and res
   on('prompt.submit', async (_$, e) => (sent.push(e.text), { text: e.text }))
   stub0(on)
   await session($, on, true)
-  await step($, on, 120000)
+  await step($, on, 10000) // the start load
+  await step($, on, 160000)
   const r = await $.prompt.submit({ text: "what's next?" })
   expect(r.drop).toBe('longhaul: compacting before the new task')
   expect(sent.length).toBe(0)
@@ -178,11 +194,12 @@ test('interactive: the timer compacts with the keep-list, counts it, then resubm
   const sent: string[] = []
   on('prompt.submit', async (_$, e) => (sent.push(e.text), { text: e.text }))
   await session($, on, true)
-  await step($, on, 120000)
+  await step($, on, 10000) // the start load
+  await step($, on, 160000)
   await $.prompt.submit({ text: "what's next?" })
   await clock.advance(10)
   await clock.settle()
-  expect(seen).toEqual([KEEP_LIST])
+  expect(seen).toEqual([buildCompactInstructions({ reason: 'new-task', nextPrompt: "what's next?" })])
   expect(sent).toEqual(["what's next?"])
   expect(state.get('event')).toEqual({ kind: 'compacted', before: 120000, after: 9000 })
 })
@@ -197,7 +214,7 @@ test('turn-end compaction runs once from the timer, is counted as plugin, and se
   expect(seen.length).toBe(0) // not inside the turn.complete hook
   await clock.advance(10)
   await clock.settle()
-  expect(seen).toEqual([KEEP_LIST])
+  expect(seen).toEqual([buildCompactInstructions({ reason: 'hard-limit' })])
   expect(state.get('event')).toEqual({ kind: 'compacted', before: 250000, after: 20000 })
   await done($)
   expect(recordOf(files).compactions.plugin).toBe(1)
@@ -209,7 +226,7 @@ test('multi-turn task preserves edited files across in-task prompts and passes t
   on('tool.call', async () => ({ result: {} }) as never)
   on('prompt.submit', async (_$, e) => ({ text: e.text }))
   await session($, on, true)
-  await step($, on, 90000)
+  await step($, on, 10000) // the start load
   await $.tool.call({ tool: 'Edit', file_path: 'src/guard.ts' })
   await done($)
   await $.prompt.submit({ text: 'also update compact.ts and commit' })
@@ -248,7 +265,8 @@ test('a resubmitted prompt does not loop: one compaction, the text sent once, th
   const sent: string[] = []
   on('prompt.submit', async (_$, e) => (sent.push(e.text), { text: e.text }))
   await session($, on, true)
-  await step($, on, 120000)
+  await step($, on, 10000) // the start load
+  await step($, on, 160000)
   await $.prompt.submit({ text: "what's next?" })
   await clock.advance(10)
   await clock.settle()
@@ -315,50 +333,160 @@ const bash = ($: any, command: string) => $.tool.call({ tool: 'Bash', command })
 const soft = { options: { guard_mode: 'auto', soft_limit: 150000, hard_limit: 300000 } }
 const logsOf = (seen: unknown): string[] => (seen as { logs: string[] }).logs
 
-test('a compaction that lands near the soft limit does not compact again until 50k of room is gained', soft, async ($, on) => {
+test('a compaction that leaves the context above the soft limit says so once and waits for MIN_GAIN', soft, async ($, on) => {
   const clock = mock.clock(on)
-  const seen = stub(on, {}, { tokensBefore: 250000, tokensAfter: 160000 })
+  const seen = stub(on, {}, { tokensBefore: 280000, tokensAfter: 60000 })
   on('tool.call', async () => ({ result: {} }) as never)
-  await step($, on, 250000)
+  await step($, on, 100000) // the start load
+  await step($, on, 280000)
   await bash($, 'git commit -m x')
   await done($)
   await clock.advance(10)
   await clock.settle()
   expect(seen.length).toBe(1)
-  await step($, on, 160000)
+  await step($, on, 160000) // measured after compacting: still over soft
   await done($)
   await clock.advance(10)
   await clock.settle()
   expect(seen.length).toBe(1) // task is done, context is over soft, but nothing to gain
-  await step($, on, 209000)
-  await done($)
-  await clock.advance(10)
-  await clock.settle()
-  expect(seen.length).toBe(1)
-  await step($, on, 210000)
+  await step($, on, 259000)
   await bash($, 'git commit -m y')
   await done($)
   await clock.advance(10)
   await clock.settle()
+  expect(seen.length).toBe(1) // 99k past the floor
+  await step($, on, 260000)
+  await bash($, 'git commit -m z')
+  await done($)
+  await clock.advance(10)
+  await clock.settle()
   expect(seen.length).toBe(2)
+  await step($, on, 170000)
   const note = logsOf(seen).filter((l) => l.includes('still above the soft limit'))
   expect(note.length).toBe(1) // once per session
   expect(note[0]).toContain('transcript')
 })
 
-test('the hard limit never compacts for less than the minimum gain either', opts, async ($, on) => {
+test('at the hard limit only a context that cannot shrink is left alone', opts, async ($, on) => {
   const clock = mock.clock(on)
-  const seen = stub(on, {}, { tokensBefore: 250000, tokensAfter: 190000 })
+  const seen = stub(on, {}, { tokensBefore: 250000, tokensAfter: 180000 })
+  await step($, on, 10000) // the start load
   await step($, on, 250000)
   await done($)
   await clock.advance(10)
   await clock.settle()
   expect(seen.length).toBe(1)
-  await step($, on, 220000) // over hard (200k), but only 30k above the 190k floor
+  await step($, on, 190000) // measured floor
+  await step($, on, 209000) // over hard (200k), 19k above the floor
   await done($)
   await clock.advance(10)
   await clock.settle()
   expect(seen.length).toBe(1)
+  await step($, on, 210000)
+  await done($)
+  await clock.advance(10)
+  await clock.settle()
+  expect(seen.length).toBe(2)
+})
+
+const settle = async (clock: { advance: (ms: number) => Promise<unknown>; settle: () => Promise<unknown> }) => {
+  await clock.advance(10)
+  await clock.settle()
+}
+
+test('the floor after a compaction is the next step, not the summary size Claude Code reports', soft, async ($, on) => {
+  const clock = mock.clock(on)
+  const seen = stub(on, {}, { tokensBefore: 250000, tokensAfter: 45000 })
+  on('tool.call', async () => ({ result: {} }) as never)
+  on('prompt.submit', async (_$, e) => ({ text: e.text }))
+  await session($, on, true)
+  await step($, on, 100000) // the start load
+  await step($, on, 250000)
+  await bash($, 'git commit -m x')
+  await done($)
+  await settle(clock)
+  expect(seen.length).toBe(1)
+  await $.prompt.submit({ text: 'keep going with the same change' })
+  await step($, on, 145000) // the summary plus the start load
+  await step($, on, 200000)
+  await bash($, 'git commit -m y')
+  await done($)
+  await settle(clock)
+  expect(seen.length).toBe(1) // 55k past the measured floor is not worth a compaction
+  await step($, on, 245000)
+  await bash($, 'git commit -m z')
+  await done($)
+  await settle(clock)
+  expect(seen.length).toBe(2)
+})
+
+test('Claude Code auto-compacting mid-turn: the floor is measured and that turn does not compact again', soft, async ($, on) => {
+  const clock = mock.clock(on)
+  const seen = stub(on, {}, { tokensBefore: 350000, tokensAfter: 45000 })
+  on('tool.call', async () => ({ result: {} }) as never)
+  await session($, on, true)
+  await step($, on, 90000)
+  await step($, on, 345000)
+  await ($.session.compact as (a: object) => Promise<unknown>)({ trigger: 'auto', messages: [{ role: 'user', text: 's', toolUses: [] }] })
+  expect(seen[0]).toContain('Mid-task compaction at the context limit')
+  await step($, on, 140000)
+  await bash($, 'git commit -m x')
+  await step($, on, 210000)
+  await done($)
+  await settle(clock)
+  expect(seen.length).toBe(1)
+})
+
+test('an auto-compaction below the hard limit, such as idle compaction, is not treated as mid-task', soft, async ($, on) => {
+  const seen = stub(on, {}, { tokensBefore: 220000, tokensAfter: 45000 })
+  await session($, on, true)
+  await step($, on, 90000)
+  await step($, on, 220000)
+  await ($.session.compact as (a: object) => Promise<unknown>)({ trigger: 'auto', messages: [{ role: 'user', text: 's', toolUses: [] }] })
+  expect(seen[0]).toBe(KEEP_LIST)
+})
+
+test("the first prompt's size is taken off the start load", soft, async ($, on) => {
+  const clock = mock.clock(on)
+  const seen = stub(on, {}, { tokensBefore: 240000, tokensAfter: 45000 })
+  on('tool.call', async () => ({ result: {} }) as never)
+  on('prompt.submit', async (_$, e) => ({ text: e.text }))
+  await session($, on, true)
+  await $.prompt.submit({ text: 'x'.repeat(150_000) }) // a pasted log of about 50k tokens
+  await step($, on, 140000)
+  await step($, on, 240000)
+  await bash($, 'git commit -m x')
+  await done($)
+  await settle(clock)
+  expect(seen.length).toBe(1) // start load 90k, so 240k frees about 105k
+})
+
+test('a first step far above any start load, as in a resumed conversation, is capped', soft, async ($, on) => {
+  const clock = mock.clock(on)
+  const seen = stub(on, {}, { tokensBefore: 270000, tokensAfter: 45000 })
+  on('tool.call', async () => ({ result: {} }) as never)
+  await session($, on, true)
+  await step($, on, 250000)
+  await step($, on, 270000)
+  await bash($, 'git commit -m x')
+  await done($)
+  await settle(clock)
+  expect(seen.length).toBe(1)
+})
+
+test('a held new-task prompt goes into the compaction instructions word for word', soft, async ($, on) => {
+  const clock = mock.clock(on)
+  const seen = stub(on, {}, { tokensBefore: 250000, tokensAfter: 45000 })
+  on('prompt.submit', async (_$, e) => ({ text: e.text }))
+  await session($, on, true)
+  await step($, on, 90000)
+  await step($, on, 250000)
+  const r = await $.prompt.submit({ text: "what's next? the README, and don't touch PRIVACY.md" })
+  expect(r.drop).toBe('longhaul: compacting before the new task')
+  await settle(clock)
+  expect(seen.length).toBe(1)
+  expect(seen[0]).toContain(`"""what's next? the README, and don't touch PRIVACY.md"""`)
+  expect(seen[0]?.endsWith(KEEP_LIST)).toBe(true)
 })
 
 test('a prompt with attachments is never dropped', opts, async ($, on) => {
@@ -366,7 +494,8 @@ test('a prompt with attachments is never dropped', opts, async ($, on) => {
   const seen = stub(on, {}, {})
   on('prompt.submit', async (_$, e) => ({ text: e.text }))
   await session($, on, true)
-  await step($, on, 120000)
+  await step($, on, 10000) // the start load
+  await step($, on, 160000)
   const r = await $.prompt.submit({ text: "what's next?", attachments: [{ id: 'a1', kind: 'image' }] } as never)
   await clock.advance(10)
   await clock.settle()
@@ -383,7 +512,8 @@ test('a failed resubmit puts the text back in the box and says so', opts, async 
   })
   on('prompt.fill', async (_$: any, e: any) => (filled.push(e.text), { isFilled: true }) as never)
   await session($, on, true)
-  await step($, on, 120000)
+  await step($, on, 10000) // the start load
+  await step($, on, 160000)
   await $.prompt.submit({ text: "what's next?" })
   await clock.advance(10)
   await clock.settle()
@@ -400,7 +530,8 @@ async function resendWithBox($: any, on: any, typed?: string) {
   on('prompt.read', async () => ({ value: { text: box, cursor: box.length } }) as never)
   on('prompt.fill', async (_$: any, e: any) => ((box = e.text), { isFilled: true }) as never)
   await session($, on, true)
-  await step($, on, 120000)
+  await step($, on, 10000) // the start load
+  await step($, on, 160000)
   const r = await $.prompt.submit({ text: "what's next?" })
   if (r.drop) box = typed ?? "what's next?"
   await clock.advance(10)
@@ -465,13 +596,14 @@ test('a new main prompt clears a compacted event', opts, async ($, on) => {
   expect(state.get('event')).toBe(null)
 })
 
-for (const [name, ctx, hard] of [['soft', 120000, false], ['hard', 250000, true]] as const) {
+for (const [name, ctx, hard] of [['soft', 160000, false], ['hard', 250000, true]] as const) {
   test(`a prompt typed over a ${name} ask counts as "Not now"`, { options: { guard_mode: 'ask', soft_limit: 100000, hard_limit: 200000 } }, async ($, on) => {
     const state = new Map<string, unknown>()
     stub(on, {}, {}, state)
     on('prompt.submit', async (_$, e) => ({ text: e.text }))
     on('tool.call', async () => ({ result: {} }) as never)
     await session($, on, true)
+    await step($, on, 10000) // the start load
     await step($, on, ctx)
     if (!hard) await bash($, 'git commit -m x')
     await done($)
@@ -494,6 +626,7 @@ const logOf = (files: Map<string, unknown>) => recordOf(files).compactionLog
 async function runTurnEnd($: any, on: any, ctx: number, commit: boolean) {
   const clock = mock.clock(on)
   on('tool.call', async () => ({ result: {} }) as never)
+  await step($, on, 10000) // the start load
   await step($, on, ctx)
   if (commit) await bash($, 'git commit -m x')
   await done($)
@@ -523,7 +656,8 @@ test('the new-task path logs new-task; a missing size reads without the arrow', 
   const seen = stub(on, files, {})
   on('prompt.submit', async (_$, e) => ({ text: e.text }))
   await session($, on, true)
-  await step($, on, 120000)
+  await step($, on, 10000) // the start load
+  await step($, on, 160000)
   await $.prompt.submit({ text: "what's next?" })
   await clock.advance(10)
   await clock.settle()
@@ -587,6 +721,7 @@ test('the logged reason is the one decided at turn end, even if the context chan
   const files = new Map<string, unknown>()
   stub(on, files, { tokensBefore: 200000, tokensAfter: 20000 })
   on('tool.call', async () => ({ result: {} }) as never)
+  await step($, on, 10000) // the start load
   await step($, on, 200000)
   await bash($, 'git commit -m x')
   await done($) // decides task-done
