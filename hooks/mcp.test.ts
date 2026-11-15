@@ -111,7 +111,7 @@ const DAY = 86_400_000
 const now = new Date(2026, 9, 18, 12, 0).getTime()
 const norm = (p: string): string => p.replace(/\\/g, '/').replace(/^[A-Za-z]:/, '')
 
-type Opt = { id: string; breakdown?: unknown; reject?: boolean; files?: Record<string, string>; store?: Map<string, unknown>; cwd?: string; history?: boolean; seeds?: object[]; ctx?: number }
+type Opt = { id: string; breakdown?: unknown; reject?: boolean; files?: Record<string, string>; store?: Map<string, unknown>; cwd?: string; history?: boolean; seeds?: object[]; ctx?: number; root?: string | (() => string); real?: Record<string, string> }
 function stub(on: any, o: Opt) {
   const files: Record<string, string> = { ...(o.files ?? {}) } // memory files
   const store = o.store ?? new Map<string, unknown>()
@@ -119,9 +119,13 @@ function stub(on: any, o: Opt) {
   for (const r of o.seeds ?? []) store.set(`session:${(r as { id: string }).id}`, r)
   const state = new Map<string, unknown>()
   const calls = { breakdown: [] as unknown[], lists: 0 }
+  const stats: string[] = []
+  const real = o.real ?? {}
   const find = (p: string): string | undefined => Object.keys(files).find((k) => norm(k) === norm(p))
   on('session.id', async () => ({ value: o.id }))
   on('session.cwd', async () => ({ value: o.cwd ?? '/w/p' }))
+  on('session.root', async () => ({ value: typeof o.root === 'function' ? o.root() : (o.root ?? '/w/p') }))
+  on('fs.stat', async (_$: any, e: any) => (stats.push(norm(e.path)), norm(e.path) in real ? { value: { realPath: real[norm(e.path)] } } : { deny: 'ENOENT' }))
   on('fs.read', async (_$: any, e: any) => {
     const k = find(e.path)
     return k ? { value: files[k] } : { deny: 'ENOENT' }
@@ -150,7 +154,7 @@ function stub(on: any, o: Opt) {
       return { turnId: 't', index: 0, answer: '', toolUses: [], usage: { model: 'claude-opus-5-5', input_tokens: 0, output_tokens: 0, cache_read_input_tokens: o.ctx, cache_creation_input_tokens: 0 } } as never
     })
   }
-  return { store, state, calls }
+  return { store, state, calls, stats }
 }
 
 const started = new WeakSet<object>()
@@ -167,4 +171,22 @@ test('an unknown subcommand prints the help and not the report', async ($, on) =
   expect(r.text.startsWith('There is no "page" command.\n\n/longhaul ')).toBe(true)
   expect(r.text).toContain('/longhaul mcp <server> here               also load in this folder')
   expect(r.text).not.toContain('longhaul report')
+})
+
+test("a session record keeps the folder's real path", async ($, on) => {
+  const s = stub(on, { id: 'r1', root: '/w/r1', real: { '/w/r1': 'D:\\real\\r1' } })
+  await start($)
+  await turn($)
+  const rec = s.store.get('session:r1') as { root: string; project: string }
+  expect(rec.root).toBe('D:/real/r1')
+  expect(rec.project).toBe('r1')
+  await $.command.run({ command: 'longhaul', args: 'health' })
+  expect(s.stats.filter((p) => p === '/w/r1').length).toBe(1) // looked up once
+})
+
+test('when the lookup fails the reported folder is kept', async ($, on) => {
+  const s = stub(on, { id: 'r2', root: 'D:\\w\\r2\\' })
+  await start($)
+  await turn($)
+  expect((s.store.get('session:r2') as { root: string }).root).toBe('D:/w/r2')
 })

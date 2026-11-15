@@ -5,18 +5,17 @@ import { contextOf } from './prices'
 import { KEEP_LIST, REASON_LABEL, withKeepList, buildCompactInstructions, setSoftLimit, getSoftLimit, declineAsk, resetDeclines, clearHardDecline, declines, isSelfCompacting, setSelfCompacting, type Compacted, type CompactContext } from './compact'
 import { lastMainCtx, setMainCtx, setCompactPending, isCompactPending, setFloor, takeAboveSoftLog, newEpoch, epoch, peekRecord, setRecord, getFloor, getEpochFiles, addEpochFiles, clearEpochFiles, getStartCtx, addInstructionParts, getInstructionParts, markFloorPending, notePrompt, measureStep } from './session'
 import { emptyFacts, observeTool, isTaskDone, isNewTask, guardDecision, type TurnFacts } from './guard'
-import { addStep, capRecord, lastActivity, newRecord, parse, projectOf, totalCost, MAX_RATE, SESSION_PREFIX, type CompactReason, type SessionRecord } from './ledger'
+import { addStep, capRecord, lastActivity, newRecord, KEEP_DAYS, parse, projectOf, totalCost, MAX_RATE, SESSION_PREFIX, type CompactReason, type SessionRecord } from './ledger'
 import { SEP, NOTICE_MCP, localDate, parseReset, pace } from './budget'
 import { eventText, meterSegs } from './band'
 import { buildReport, renderText, unusedServers, windowOf, type ReportData } from './report'
 import { NOTICE_TOTAL, NOTICE_EVERY, DUP_TOKENS, instructionParts, snapshotOf, unusedOf, addCalls, historyOf, healthAdvice, renderHealth, type BaseSnapshot } from './health'
 import { DEFAULT_RULES, parseRules, takeRulesWarn, type Rule } from './rules'
-import { parseCommand, HELP } from './mcp'
+import { parseCommand, HELP, normPath, type Here } from './mcp'
 import { classify } from './classifier'
 import { HANDOFF, ASK_HANDOFF, SUBAGENT_NOTE, REVIEW_TOOL, OUTCOMES, isExpensiveMain, noteEdit, applyReview, ageDecisions, getRules, setRules, clearMainEdited, resetHandoff } from './handoff'
 
 const DAY = 86_400_000
-const KEEP_DAYS = 21 // a session record this long without activity leaves the store
 
 // Guard state, memory only: nothing about prompts is ever written down.
 let facts: TurnFacts = emptyFacts()
@@ -80,8 +79,38 @@ async function saveRecord($: EngineInterface, rec: SessionRecord): Promise<void>
   }
 }
 
-async function loadRecord($: EngineInterface, id: string, project: string, now: number): Promise<SessionRecord> {
-  const fresh = newRecord(id, project, now)
+// The folder the session runs in; cwd() when root() is missing or throws.
+async function rootOf($: EngineInterface): Promise<string> {
+  try {
+    const r = await $.session.root()
+    if (typeof r === 'string' && r) return r
+  } catch {
+    // fall back to cwd
+  }
+  return $.session.cwd()
+}
+
+async function statReal($: EngineInterface, path: string): Promise<string | undefined> {
+  try {
+    const r = (await $.fs.stat(path, { resolve: true })).realPath
+    return typeof r === 'string' && r ? r : undefined
+  } catch {
+    return undefined
+  }
+}
+
+// One lookup per distinct root, shared by raises that arrive together.
+const realPaths = new Map<string, Promise<string | undefined>>()
+
+async function sessionFolders($: EngineInterface): Promise<Here> {
+  const root = await rootOf($)
+  let p = realPaths.get(root)
+  if (!p) realPaths.set(root, (p = statReal($, root)))
+  return { root, real: await p }
+}
+
+async function loadRecord($: EngineInterface, id: string, project: string, now: number, root: string): Promise<SessionRecord> {
+  const fresh = newRecord(id, project, now, root)
   try {
     const stored = await $.store.get(SESSION_PREFIX + id)
     return (stored !== undefined && parse(stored, fresh)) || fresh
@@ -118,14 +147,14 @@ async function listRecords($: EngineInterface, sinceMs: number): Promise<Session
 
 async function switchTo($: EngineInterface, old: SessionRecord | null, id: string): Promise<SessionRecord> {
   if (old) await saveRecord($, old) // nothing in memory is discarded
-  const cwd = await $.session.cwd()
+  const { root, real } = await sessionFolders($)
   let now = Date.now()
   try {
     now = await $.clock.now()
   } catch {
     // the wall clock will do
   }
-  const next = await loadRecord($, id, projectOf(cwd), now)
+  const next = await loadRecord($, id, projectOf(root), now, normPath(real ?? root))
   setRecord(next)
   return next
 }

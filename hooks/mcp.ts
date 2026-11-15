@@ -58,6 +58,7 @@ export function holds(rules: RuleSet | null, server: string, provider: string | 
 
 export const holdMessage = (server: string): string => `longhaul holds ${server} in this folder: /longhaul mcp ${server} here turns it on.`
 
+export type Here = { root: string; real?: string }
 export type Verb = 'only' | 'here' | 'everywhere' | 'off'
 export type Command =
   | { kind: 'report' } | { kind: 'health' } | { kind: 'list' }

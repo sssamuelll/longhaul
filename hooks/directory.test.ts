@@ -19,6 +19,8 @@ function stub(on: any, o: { store?: Map<string, unknown>; files?: Record<string,
   const prompts: any[] = []
   on('session.id', async () => ({ value: 'd1' }))
   on('session.cwd', async () => ({ value: '/w/p' }))
+  on('session.root', async () => ({ value: '/w/p' }))
+  on('fs.stat', async (_$: any, e: any) => ({ value: { realPath: e.path } as never }))
   on('session.model', async () => ({ value: o.model ?? 'claude-opus-5-5' }))
   on('session.usage', async () => ({ value: { rateLimits: [], context: {} } as never }))
   on('session.start', async () => ({ cwd: '/w/p' }))

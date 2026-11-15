@@ -148,3 +148,8 @@ test('an old record without a compaction log loads with an empty one', async ($,
   await complete($)
   expect(recordOf(store, 'cl').compactionLog).toEqual([])
 })
+
+test('a record keeps the folder it was started in, when given', () => {
+  expect(newRecord('a', 'vina', 1, 'D:/Desktop/projects/vina').root).toBe('D:/Desktop/projects/vina')
+  expect('root' in newRecord('a', 'vina', 1)).toBe(false)
+})
