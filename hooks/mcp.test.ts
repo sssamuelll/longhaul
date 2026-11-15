@@ -1,5 +1,5 @@
 import { test, expect } from 'claude-code/testing'
-import { parseCommand, knownServers, suggestionsOf, renderList, MODE_OFF, type Known, type Here, planVerb, resolveServer, connectLine, STAYS_ON, nameKey, normPath, checkPattern, matchesFolder, readRuleSet, findRule, isProtected, holds, holdMessage, NO_FOLDER } from './mcp'
+import { parseCommand, knownServers, hasTools, suggestionsOf, renderList, MODE_OFF, type Known, type Here, planVerb, resolveServer, connectLine, STAYS_ON, nameKey, normPath, checkPattern, matchesFolder, readRuleSet, findRule, isProtected, holds, holdMessage, NO_FOLDER } from './mcp'
 import { headingKey } from './health'
 import { newRecord, projectOf } from './ledger'
 import { localDate } from './budget'
@@ -10,6 +10,14 @@ test('one key for a server however it is spelled', () => {
   expect(nameKey('claude_ai_Higgsfield')).toBe('claude_ai_Higgsfield')
   expect(nameKey('plugin:context-mode:context-mode')).toBe(nameKey('plugin_context-mode_context-mode'))
   expect(headingKey('claude.ai Higgsfield')).toBe(headingKey('claude_ai_Higgsfield')) // pull request 1 still holds
+})
+
+test('a server is in the session when the context lists one of its tools, in either spelling', () => {
+  const tools = [{ name: 'mcp__claude_ai_Higgsfield__generate' }, { name: 'Read' }]
+  expect(hasTools(tools, nameKey('claude.ai Higgsfield'))).toBe(true)
+  expect(hasTools(tools, nameKey('claude_ai_Higgsfield'))).toBe(true)
+  expect(hasTools(tools, nameKey('kicad'))).toBe(false)
+  expect(hasTools([], nameKey('kicad'))).toBe(false)
 })
 
 test('a name pattern matches between separators, any case', () => {
@@ -302,7 +310,7 @@ test('the connection is reported as the engine answered', () => {
   expect(connectLine(undefined)).toBe('It did not connect.')
 })
 
-type Opt = { id: string; breakdown?: unknown; reject?: boolean; files?: Record<string, string>; store?: Map<string, unknown>; cwd?: string; history?: boolean; seeds?: object[]; ctx?: number; root?: string | (() => string); real?: Record<string, string>; frozen?: boolean; denySet?: boolean; denyRulesFrom?: number }
+type Opt = { id: string; breakdown?: unknown; reject?: boolean; files?: Record<string, string>; store?: Map<string, unknown>; cwd?: string; history?: boolean; seeds?: object[]; ctx?: number; root?: string | (() => string); real?: Record<string, string>; frozen?: boolean; denySet?: boolean; denyRulesFrom?: number; unlisted?: string[] }
 function stub(on: any, o: Opt) {
   const files: Record<string, string> = { ...(o.files ?? {}) } // memory files
   const store = o.store ?? new Map<string, unknown>()
@@ -335,7 +343,7 @@ function stub(on: any, o: Opt) {
     if (!o.frozen) store.set(e.key, JSON.parse(JSON.stringify(e.value)))
     return { value: undefined }
   })
-  on('mcp.connect', async (_$: any, e: any) => (order.push('mcp.connect'), asked.push(e), { value: { isConnected: true, server: e.server } }) as never)
+  on('mcp.connect', async (_$: any, e: any) => (order.push('mcp.connect'), asked.push(e), { value: o.unlisted?.includes(e.server) ? { isConnected: false, reason: 'unlisted', message: `Neither this plugin's manifest nor /mcp lists an MCP server named "${e.server}".` } : { isConnected: true, server: e.server } }) as never)
   on('store.delete', async (_$: any, e: any) => (store.delete(e.key), { value: undefined }))
   on('store.keys', async () => (calls.lists++, { value: [...store.keys()] }))
   on('state.get', async (_$: any, e: any) => ({ value: { value: state.get(e.key), version: 0 } as never }))
@@ -563,6 +571,23 @@ test('only with a pattern that matches this folder saves the rule and connects',
   expect(rules(s)).toEqual({ h21: ['h21'] })
   expect(s.asked.map((e) => e.server)).toEqual(['h21'])
   expect(r.text.split('\n')[1]).toBe('It is on in this session.')
+})
+
+test('a connected server the hook never saw is reported on when the engine refuses its tool-name spelling', ON, async ($, on) => {
+  const s = stub(on, { id: 'h30', root: '/w/h30', breakdown: tool('claude_ai_H30'), unlisted: ['claude_ai_H30'] })
+  await start($)
+  const r: any = await run($, 'mcp claude.ai H30 here')
+  expect(s.asked.map((e) => e.server)).toEqual(['claude_ai_H30'])
+  expect(r.text).toBe('claude_ai_H30 has no rule and loads everywhere.\nIt is on in this session.')
+})
+
+test('an unlisted server with no tools in the session keeps the refusal, also when asked twice', ON, async ($, on) => {
+  stub(on, { id: 'h31', root: '/w/h31', unlisted: ['h31'], store: new Map([['mcp:rules', { h31: ['elsewhere'] }]]) })
+  await start($)
+  const refusal = 'It did not connect: Neither this plugin\'s manifest nor /mcp lists an MCP server named "h31".'
+  expect(((await run($, 'mcp h31 everywhere')) as any).text).toBe('h31 has no rule and loads everywhere.\n' + refusal)
+  // the mod's own call passed through its hook and noted h31 as seen: it is still not on
+  expect(((await run($, 'mcp h31 here')) as any).text).toBe('h31 has no rule and loads everywhere.\n' + refusal)
 })
 
 test('an unknown session folder holds nothing and saves nothing', ON, async ($, on) => {

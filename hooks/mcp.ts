@@ -126,6 +126,15 @@ export type Known = {
 
 const folderOf = (r: SessionRecord): string => r.root ?? r.project
 
+const wireOf = (tool: string): string | undefined => tool.match(/^mcp__(.+?)__/)?.[1]
+
+// the session's context lists one of its tools, so it is connected under whatever name connect was asked with
+export const hasTools = (tools: { name: string }[], key: string): boolean =>
+  tools.some((t) => {
+    const wire = wireOf(t.name)
+    return wire !== undefined && nameKey(wire) === key
+  })
+
 export function knownServers(src: { seen: Seen[]; tools: { name: string; serverName?: string }[]; records: SessionRecord[]; rules: RuleSet }): Known[] {
   type Acc = { names: Record<'seen' | 'rule' | 'tool' | 'label' | 'key', string | undefined>; isOn: boolean; isSeen: boolean; snap?: { at: number; tools: number; tokens: number }; calls: Map<string, number>; withSnap: Set<string>; since?: number }
   const acc = new Map<string, Acc>()
@@ -142,7 +151,7 @@ export function knownServers(src: { seen: Seen[]; tools: { name: string; serverN
     if (!s.isHeld) a.isOn = true
   }
   for (const t of src.tools) {
-    const wire = t.name.match(/^mcp__(.+?)__/)?.[1]
+    const wire = wireOf(t.name)
     if (!wire) continue
     const a = get(wire)
     a.names.tool = t.serverName

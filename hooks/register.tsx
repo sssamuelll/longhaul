@@ -12,7 +12,7 @@ import { buildReport, renderText, windowOf, type ReportData } from './report'
 import { NOTICE_TOTAL, NOTICE_EVERY, DUP_TOKENS, instructionParts, snapshotOf, unusedOf, addCalls, historyOf, healthAdvice, renderHealth, type BaseSnapshot } from './health'
 import { DEFAULT_RULES, parseRules, takeRulesWarn, type Rule } from './rules'
 import type { History } from './health'
-import { parseCommand, HELP, normPath, RULES_KEY, readRuleSet, findRule, isProtected, holds, holdMessage, checkPattern, noteSeen, seenServers, knownServers, foldersOf, suggestionsOf, MODE_OFF, renderList, resolveServer, planVerb, connectLine, NOT_SAVED, NOT_READ, NO_FOLDER, type Command, type Here, type RuleSet, type Known, type Typed } from './mcp'
+import { parseCommand, HELP, normPath, RULES_KEY, readRuleSet, findRule, isProtected, holds, holdMessage, checkPattern, noteSeen, seenServers, knownServers, hasTools, foldersOf, suggestionsOf, MODE_OFF, renderList, resolveServer, planVerb, connectLine, NOT_SAVED, NOT_READ, NO_FOLDER, type Command, type Here, type RuleSet, type Known, type Typed } from './mcp'
 import { classify } from './classifier'
 import { HANDOFF, ASK_HANDOFF, SUBAGENT_NOTE, REVIEW_TOOL, OUTCOMES, isExpensiveMain, noteEdit, applyReview, ageDecisions, getRules, setRules, clearMainEdited, resetHandoff } from './handoff'
 
@@ -435,7 +435,7 @@ async function runReport($: EngineInterface, cfg: Config): Promise<{ text: strin
 
 // ---- MCP rules ----
 
-type Gathered = { now: number; records: SessionRecord[]; rules: RuleSet | null; here: Here; known: Known[]; history: History } // rules null: the store refused the read
+type Gathered = { now: number; records: SessionRecord[]; rules: RuleSet | null; here: Here; known: Known[]; tools: { name: string; serverName?: string }[]; history: History } // rules null: the store refused the read
 
 // Every kept record with this session's on top. A failing source counts as empty, except the rules.
 async function gather($: EngineInterface): Promise<Gathered> {
@@ -467,7 +467,7 @@ async function gather($: EngineInterface): Promise<Gathered> {
     fail($, 'mcp folder', err)
   }
   const known = knownServers({ seen: seenServers(), tools, records, rules: rules ?? {} })
-  return { now, records, rules, here, known, history: historyOf(records, now) }
+  return { now, records, rules, here, known, tools, history: historyOf(records, now) }
 }
 
 async function holdsHere($: EngineInterface, server: string, provider?: string): Promise<boolean> {
@@ -516,12 +516,14 @@ async function runMcp($: EngineInterface, cfg: Config, cmd: Command): Promise<{ 
   }
   const lines = [...plan.lines]
   if (plan.connect) {
-    let answer: { isConnected?: boolean; message?: string } | undefined
+    let answer: { isConnected?: boolean; message?: string; reason?: string } | undefined
     try {
       answer = await $.mcp.connect(k.name)
     } catch (err) {
       answer = { isConnected: false, message: err instanceof Error ? err.message : String(err) }
     }
+    // connect takes the /mcp name. A server the hook never saw (mcp_mode turned on in this session) is known by its tool-name spelling, which the engine does not list
+    if (answer?.reason === 'unlisted' && hasTools(g.tools, k.key)) answer = { isConnected: true }
     lines.splice(1, 0, connectLine(answer))
   }
   return { text: lines.join('\n') }
