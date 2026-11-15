@@ -18,6 +18,16 @@ let startPending = true
 let floorPending = false
 let promptChars = 0
 export const getStartCtx = (): number => startCtx
+// Instruction lengths per server, kept apart from newEpoch: only listed servers are counted, so a stale name is harmless.
+let instrParts: [string, number][] = []
+export const getInstructionParts = (): [string, number][] => instrParts
+export const addInstructionParts = (parts: [string, number][]): void => {
+  for (const [name, len] of parts) {
+    const i = instrParts.findIndex(([n]) => n === name)
+    if (i < 0) instrParts.push([name, len])
+    else instrParts[i] = [name, len]
+  }
+}
 export const markFloorPending = (): void => void (floorPending = true)
 export const notePrompt = (chars: number): void => void (promptChars = chars)
 // ponytail: about 3 characters per token; dense text has fewer, so the measure stays a little high.

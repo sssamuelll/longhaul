@@ -3,13 +3,13 @@ import type { BandEvent, Meter } from '../types/index'
 import { readConfig, type Config } from './config'
 import { contextOf } from './prices'
 import { KEEP_LIST, REASON_LABEL, withKeepList, buildCompactInstructions, setSoftLimit, getSoftLimit, declineAsk, resetDeclines, clearHardDecline, declines, isSelfCompacting, setSelfCompacting, type Compacted, type CompactContext } from './compact'
-import { lastMainCtx, setMainCtx, setCompactPending, isCompactPending, setFloor, takeAboveSoftLog, newEpoch, epoch, peekRecord, setRecord, getFloor, getEpochFiles, addEpochFiles, clearEpochFiles, getStartCtx, markFloorPending, notePrompt, measureStep } from './session'
+import { lastMainCtx, setMainCtx, setCompactPending, isCompactPending, setFloor, takeAboveSoftLog, newEpoch, epoch, peekRecord, setRecord, getFloor, getEpochFiles, addEpochFiles, clearEpochFiles, getStartCtx, addInstructionParts, getInstructionParts, markFloorPending, notePrompt, measureStep } from './session'
 import { emptyFacts, observeTool, isTaskDone, isNewTask, guardDecision, type TurnFacts } from './guard'
 import { addStep, capRecord, lastActivity, newRecord, parse, projectOf, totalCost, MAX_RATE, SESSION_PREFIX, type CompactReason, type SessionRecord } from './ledger'
 import { SEP, NOTICE_MCP, localDate, parseReset, pace } from './budget'
 import { eventText, meterSegs } from './band'
 import { buildReport, renderText, unusedServers, windowOf, type ReportData } from './report'
-import { NOTICE_TOTAL, NOTICE_EVERY, DUP_TOKENS, snapshotOf, unusedOf, addCalls, historyOf, healthAdvice, renderHealth, type BaseSnapshot } from './health'
+import { NOTICE_TOTAL, NOTICE_EVERY, DUP_TOKENS, instructionParts, snapshotOf, unusedOf, addCalls, historyOf, healthAdvice, renderHealth, type BaseSnapshot } from './health'
 import { DEFAULT_RULES, parseRules, takeRulesWarn, type Rule } from './rules'
 import { classify } from './classifier'
 import { HANDOFF, ASK_HANDOFF, SUBAGENT_NOTE, REVIEW_TOOL, OUTCOMES, isExpensiveMain, noteEdit, applyReview, ageDecisions, getRules, setRules, clearMainEdited, resetHandoff } from './handoff'
@@ -315,7 +315,7 @@ async function takeSnapshot($: EngineInterface): Promise<BaseSnapshot | null> {
     }
   }
   const at = await $.clock.now()
-  return snapshotOf(b, texts, at)
+  return snapshotOf(b, texts, at, { startCtx: getStartCtx(), instructions: getInstructionParts() })
 }
 
 async function weekRecords($: EngineInterface, now: number): Promise<SessionRecord[]> {
@@ -676,6 +676,16 @@ export const register: Register = (on, options) => {
       fail($, 'review', err)
       return { deny: 'longhaul: could not record the outcome.' }
     }
+  })
+
+  // Observes only: keeps each server's instruction length, never the text, and passes the event on as it came.
+  on('prompt.attachment', { type: 'mcp_instructions_delta' }, async ($, e, next) => {
+    try {
+      addInstructionParts(instructionParts((e as { text: string }).text))
+    } catch (err) {
+      fail($, 'server instructions', err)
+    }
+    return next(e)
   })
 
   // On Opus or Fable, the system prompt asks for Sonnet subagents on execution work.

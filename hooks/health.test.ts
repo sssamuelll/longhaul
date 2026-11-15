@@ -118,6 +118,7 @@ function stub(on: any, o: Opt) {
     return { value: { rateLimits: [], context: e?.breakdown && o.breakdown ? { breakdown: o.breakdown } : {} } as never }
   })
   on('turn.complete', async () => ({ text: '' }))
+  on('prompt.attachment', async (_$: any, e: any) => ({ text: e.text }))
   on('session.start', async () => ({ cwd: '/w/p' }))
   if (o.ctx) {
     on('turn.step', async function* () {
@@ -521,4 +522,70 @@ test('renderHealth: a snapshot stored before this change reads as before', async
 test('renderHealth puts the measured start after the first-reply note', async () => {
   const s = snap({ afterFirstReply: true, measured: 68_400 })
   expect(renderHealth(s, [])).toContain('93,000 tokens (est.), counted after the first reply; the first request measured 68,400. What loads')
+})
+
+const attach = ($: any, text: string) => $.prompt.attachment({ type: 'mcp_instructions_delta', text, origin: { kind: 'engine' } } as never)
+
+test('server instructions are read as they pass, unchanged, and counted in the snapshot', async ($, on) => {
+  const s = stub(on, { id: 'i1', breakdown: bd({ mcpTools: lazyTools }) })
+  await begin($)
+  expect(((await attach($, INSTR)) as any).text).toBe(INSTR)
+  expect(((await attach($, 'no headings here')) as any).text).toBe('no headings here')
+  await done($)
+  const base = saved(s.store, 'i1').base
+  expect(base.mcp.lazy).toEqual({ tools: 2, tokens: 216, loaded: 0 })
+  expect(base.mcp.mixed).toEqual({ tools: 2, tokens: 4057, loaded: 1 })
+  expect(JSON.stringify(base)).not.toContain('xxxx') // no instruction text
+})
+
+test('a later announcement replaces one server and keeps the others', async ($, on) => {
+  const s = stub(on, { id: 'i2', breakdown: bd({ mcpTools: lazyTools }) })
+  await begin($)
+  await attach($, INSTR)
+  await attach($, `# MCP Server Instructions
+
+${part('mixed', 300)}`)
+  await done($)
+  const base = saved(s.store, 'i2').base
+  expect(base.mcp.lazy.tokens).toBe(216) // kept
+  expect(base.mcp.mixed.tokens).toBe(4157) // 4007 + 300 / 2, not 4007 + 400 / 2
+})
+
+test('an attachment the parser cannot read is passed on and changes nothing', async ($, on) => {
+  const s = stub(on, { id: 'i4', breakdown: bd({ mcpTools: lazyTools }) })
+  await begin($)
+  await attach($, INSTR)
+  expect(((await attach($, '### lazy\nheadings one level down')) as any).text).toBe('### lazy\nheadings one level down')
+  await done($)
+  const base = saved(s.store, 'i4').base
+  expect(base.mcp.lazy).toEqual({ tools: 2, tokens: 216, loaded: 0 }) // what was read before is kept
+  expect(base.mcp.mixed).toEqual({ tools: 2, tokens: 4057, loaded: 1 })
+})
+
+test('the heads-up counts an unused on-demand server', async ($, on) => {
+  const s = stub(on, { id: 'i3', breakdown: bd({ mcpTools: lazyTools }) })
+  await begin($)
+  await attach($, `# MCP Server Instructions
+
+${part('lazy', 40_000)}${part('mixed', 100)}`)
+  await done($)
+  expect(healthEvent(s.state)).toEqual({ kind: 'health', total: 93_000, unusedMcp: 35_073, duplicate: 0 }) // 20,016 + 4,057 + 11,000
+})
+
+test('the measured start is saved with the snapshot and shown', async ($, on) => {
+  const s = stub(on, { id: 'ms1', breakdown: bd(), ctx: 68_400 })
+  await begin($)
+  await step($)
+  await done($)
+  expect(saved(s.store, 'ms1').base.measured).toBe(68_400)
+  const r: any = await $.command.run({ command: 'longhaul', args: 'health' })
+  expect(r.text).toContain('; the first request measured 68,400.')
+})
+
+test('a capped start measure is not saved', { options: { guard_mode: 'off' } }, async ($, on) => {
+  const s = stub(on, { id: 'ms2', breakdown: bd(), ctx: 250_000 })
+  await begin($)
+  await step($)
+  await done($)
+  expect(saved(s.store, 'ms2').base.measured).toBeUndefined()
 })
