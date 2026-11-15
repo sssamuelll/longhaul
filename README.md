@@ -120,7 +120,7 @@ Six jobs. The guard and classifier have three modes each: `auto` acts, `ask` ask
 - `/longhaul mcp <server> everywhere` removes the rule.
 - `/longhaul mcp <server> off` turns the server off in every folder.
 
-Type the server's name as `/mcp` lists it, without quotes even when it has spaces. A pattern with spaces goes in double quotes. `~` is not read as your home folder, so type the folder's name, its full path, or `here` from inside it. A name the mod does not know is refused with the list of the ones it knows, so a typo never becomes a rule. Anything else after `/longhaul` prints the list of commands.
+Type the server's name as `/mcp` lists it, without quotes even when it has spaces. With `mcp_mode` `off`, and in the session where you turn it on, `/longhaul mcp` names a server the way its tools do, so the connector that `/mcp` lists as `claude.ai Higgsfield` appears as `claude_ai_Higgsfield`. A command takes either spelling. A pattern with spaces goes in double quotes. `~` is not read as your home folder, so type the folder's name, its full path, or `here` from inside it. A name the mod does not know is refused with the list of the ones it knows, so a typo never becomes a rule. Anything else after `/longhaul` prints the list of commands.
 
 ## What it changes, sends, runs and writes
 
