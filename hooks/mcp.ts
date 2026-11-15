@@ -1,4 +1,8 @@
-// Which MCP servers are held back in which folder. Pure: no engine calls, no environment, no imports from ./health.
+// Which MCP servers are held back in which folder. No engine calls, no environment, no value imports from ./health.
+import type { History } from './health'
+import { KEEP_DAYS, type SessionRecord } from './ledger'
+import { localDate } from './budget'
+
 export const RULES_KEY = 'mcp:rules'
 export const PROTECTED = ['longhaul'] // name keys that are never held
 export type RuleSet = Record<string, string[]>
@@ -94,4 +98,144 @@ export function parseCommand(args: string): Command {
   if (verb === 'only' && !patterns.length) return { kind: 'help', why: 'After only, type at least one folder name or full path.' }
   if (verb !== 'only' && patterns.length) return { kind: 'help', why: `Type ${verb} with nothing after it.` }
   return { kind: 'verb', server: rest.slice(0, at).join(' '), verb, patterns }
+}
+
+// ---- what is known about each server ----
+
+export const MAX_ONLY_FOLDERS = 3
+export const MAX_LISTED_FOLDERS = 5
+
+export type Seen = { name: string; isHeld: boolean }
+const seen = new Map<string, Seen>() // the module's one piece of state: what the hook saw, newest answer wins
+export const noteSeen = (name: string, isHeld: boolean): void => void seen.set(nameKey(name), { name, isHeld })
+export const seenServers = (): Seen[] => [...seen.values()]
+
+export type Known = {
+  key: string
+  name: string
+  isOn: boolean // on in this session: in the breakdown, or the hook passed it
+  isSeen: boolean // false: known by its rule alone
+  rule?: string[]
+  tools?: number
+  tokens?: number // from the newest kept snapshot that has it
+  calls: [folder: string, calls: number][] // most calls first
+  idleIn: string[] // a kept snapshot had it and no kept record has a call
+}
+
+const folderOf = (r: SessionRecord): string => r.root ?? r.project
+
+export function knownServers(src: { seen: Seen[]; tools: { name: string; serverName?: string }[]; records: SessionRecord[]; rules: RuleSet }): Known[] {
+  type Acc = { names: Record<'seen' | 'rule' | 'tool' | 'label' | 'key', string | undefined>; isOn: boolean; isSeen: boolean; snap?: { at: number; tools: number; tokens: number }; calls: Map<string, number>; withSnap: Set<string> }
+  const acc = new Map<string, Acc>()
+  const get = (wire: string): Acc => {
+    const k = nameKey(wire)
+    let a = acc.get(k)
+    if (!a) acc.set(k, (a = { names: { seen: undefined, rule: undefined, tool: undefined, label: undefined, key: wire }, isOn: false, isSeen: false, calls: new Map(), withSnap: new Set() }))
+    return a
+  }
+  for (const s of src.seen) {
+    const a = get(s.name)
+    a.names.seen = s.name
+    a.isSeen = true
+    if (!s.isHeld) a.isOn = true
+  }
+  for (const t of src.tools) {
+    const wire = t.name.match(/^mcp__(.+?)__/)?.[1]
+    if (!wire) continue
+    const a = get(wire)
+    a.names.tool = t.serverName
+    a.isOn = a.isSeen = true
+  }
+  for (const key of Object.keys(src.rules)) get(key).names.rule = key
+  const called = new Set<string>() // every folder with a call, any server
+  for (const r of src.records) {
+    const f = folderOf(r)
+    for (const [wire, n] of Object.entries(r.mcpCalls)) {
+      const a = get(wire)
+      a.isSeen = true
+      a.calls.set(f, (a.calls.get(f) ?? 0) + n)
+      called.add(nameKey(wire) + '\n' + f)
+    }
+    for (const [wire, e] of Object.entries(r.base?.mcp ?? {})) {
+      const a = get(wire)
+      a.isSeen = true
+      a.withSnap.add(f)
+      a.names.label ??= e.label
+      if (!a.snap || r.base!.at > a.snap.at) a.snap = { at: r.base!.at, tools: e.tools, tokens: e.tokens }
+    }
+  }
+  const out: Known[] = []
+  for (const [key, a] of acc) {
+    const name = a.names.seen ?? a.names.rule ?? a.names.tool ?? a.names.label ?? a.names.key!
+    if (isProtected(name)) continue
+    const rule = findRule(src.rules, name)?.[1]
+    out.push({
+      key,
+      name,
+      isOn: a.isOn,
+      isSeen: a.isSeen,
+      ...(rule && { rule }),
+      ...(a.snap && { tools: a.snap.tools, tokens: a.snap.tokens }),
+      calls: [...a.calls].sort((x, y) => y[1] - x[1]),
+      idleIn: [...a.withSnap].filter((f) => !called.has(key + '\n' + f)),
+    })
+  }
+  return out.sort((a, b) => (b.tokens ?? -1) - (a.tokens ?? -1) || a.name.localeCompare(b.name))
+}
+
+export const foldersOf = (records: SessionRecord[]): string[] => [...new Set(records.map(folderOf))]
+
+// The folder's last name when, as a pattern, it matches no other recorded folder; else the full path.
+const labelOf = (folder: string, folders: string[]): string => {
+  const last = normPath(folder).split('/').filter(Boolean).pop()
+  return last && !matchesFolder([last], folders.filter((f) => f !== folder)) ? last : folder
+}
+
+const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`
+const num = (x: number) => x.toLocaleString('en-US')
+const periodOf = (h: History, now: number) => `in the last ${plural(Math.min(KEEP_DAYS, Math.floor((now - h.since) / 86_400_000)), 'day')}`
+
+export type Suggestion = { key: string; name: string; tools?: number; why: string; command: string }
+
+export function suggestionsOf(known: Known[], folders: string[], history: History, now: number): Suggestion[] {
+  if (!history.mature) return []
+  const period = periodOf(history, now)
+  const out: Suggestion[] = []
+  for (const k of known) {
+    if (k.rule) continue
+    const base = { key: k.key, name: k.name, ...(k.tools !== undefined && { tools: k.tools }) }
+    if (!k.calls.length) out.push({ ...base, why: `was not called ${period}`, command: `/longhaul mcp ${k.name} off` })
+    else if (k.calls.length <= MAX_ONLY_FOLDERS && k.idleIn.length) {
+      const labels = k.calls.map(([f]) => labelOf(f, folders))
+      out.push({ ...base, why: `was called only in ${labels.join(', ')} ${period}`, command: `/longhaul mcp ${k.name} only ${labels.map((l) => (l.includes(' ') ? `"${l}"` : l)).join(' ')}` })
+    }
+  }
+  return out
+}
+
+export const MODE_OFF = 'Rules are saved but not applied. To apply them, set mcp_mode to on in /plugin and run /reload-plugins.'
+
+export function renderList(known: Known[], o: { suggestions: Suggestion[]; folders: string[]; here: Here; isOn: boolean; history: History; now: number }): string {
+  const lines = o.isOn ? [] : [MODE_OFF, '']
+  lines.push('MCP servers', '')
+  if (!known.length) return [...lines, 'No MCP servers known yet.'].join('\n')
+  const hereFolders = [o.here.root, ...(o.here.real ? [o.here.real] : [])]
+  const period = periodOf(o.history, o.now)
+  const since = localDate(o.history.since)
+  for (const k of known) {
+    lines.push(`${k.name}: ${k.tools !== undefined && k.tokens !== undefined ? `${plural(k.tools, 'tool')}, about ${num(k.tokens)} tokens (est.) per session` : 'cost not measured yet'}`)
+    if (!k.rule) lines.push('  rule: none, loads everywhere')
+    else if (!k.rule.length) lines.push('  rule: off in every folder')
+    else lines.push(`  rule: only ${k.rule.join(', ')}${o.isOn ? (matchesFolder(k.rule, hereFolders) ? ' (loads in this folder)' : ' (held in this folder)') : ''}`)
+    if (!k.isSeen) lines.push(`  not seen in the last ${KEEP_DAYS} days`)
+    else if (!k.calls.length) lines.push(o.history.mature ? `  not called ${period}` : `  no calls recorded since ${since}`)
+    else {
+      const shown = k.calls.slice(0, MAX_LISTED_FOLDERS).map(([f, c]) => `${labelOf(f, o.folders)} (${c})`).join(', ')
+      const more = k.calls.length - MAX_LISTED_FOLDERS
+      lines.push(`  called ${o.history.mature ? period : `since ${since}`}: ${shown}${more > 0 ? ` and ${more} more` : ''}`)
+    }
+    const s = o.suggestions.find((x) => x.key === k.key)
+    if (s) lines.push(`  suggestion: ${s.command}`)
+  }
+  return lines.join('\n')
 }

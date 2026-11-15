@@ -1,7 +1,8 @@
 import { test, expect } from 'claude-code/testing'
-import { parseCommand, nameKey, normPath, checkPattern, matchesFolder, readRuleSet, findRule, isProtected, holds, holdMessage } from './mcp'
+import { parseCommand, knownServers, suggestionsOf, renderList, MODE_OFF, type Known, nameKey, normPath, checkPattern, matchesFolder, readRuleSet, findRule, isProtected, holds, holdMessage } from './mcp'
 import { headingKey } from './health'
-import { newRecord } from './ledger'
+import { newRecord, projectOf } from './ledger'
+import type { BaseSnapshot } from './health'
 
 test('one key for a server however it is spelled', () => {
   expect(nameKey('claude.ai Higgsfield')).toBe('claude_ai_Higgsfield')
@@ -110,6 +111,99 @@ test('what is not understood gets one line that says so', () => {
 const DAY = 86_400_000
 const now = new Date(2026, 9, 18, 12, 0).getTime()
 const norm = (p: string): string => p.replace(/\\/g, '/').replace(/^[A-Za-z]:/, '')
+
+// ---- known servers, suggestions and the list ----
+
+const rec = (id: string, root: string, calls: Record<string, number>, mcp?: BaseSnapshot['mcp']) => {
+  const r = newRecord(id, projectOf(root), now - 5 * DAY, root)
+  r.mcpCalls = calls
+  if (mcp) r.base = { at: now - 5 * DAY, total: 0, mcp, memory: [], skills: { count: 0, tokens: 0 }, duplicate: { lines: 0, tokens: 0, files: [] } }
+  return r
+}
+const old = { mature: true, since: now - 21 * DAY }
+
+test('the four sources are joined under one name', () => {
+  const [h] = knownServers({
+    seen: [{ name: 'claude.ai Higgsfield', isHeld: true }],
+    tools: [],
+    records: [rec('a', 'D:/Desktop/media', { claude_ai_Higgsfield: 41 }, { claude_ai_Higgsfield: { tools: 170, tokens: 5800, loaded: 0 } })],
+    rules: { claude_ai_Higgsfield: ['D:/Desktop/media'] },
+  })
+  expect(h).toEqual({ key: 'claude_ai_Higgsfield', name: 'claude.ai Higgsfield', isOn: false, isSeen: true, rule: ['D:/Desktop/media'], tools: 170, tokens: 5800, calls: [['D:/Desktop/media', 41]], idleIn: [] })
+})
+
+test('a server is known from any one source', () => {
+  const none = { seen: [], tools: [], records: [], rules: {} }
+  expect(knownServers({ ...none, tools: [{ name: 'mcp__blender__render', serverName: 'blender' }] })[0]).toMatchObject({ name: 'blender', isOn: true, isSeen: true })
+  expect(knownServers({ ...none, seen: [{ name: 'kicad', isHeld: true }] })[0]).toMatchObject({ name: 'kicad', isOn: false, isSeen: true })
+  expect(knownServers({ ...none, seen: [{ name: 'kicad', isHeld: false }] })[0].isOn).toBe(true)
+  expect(knownServers({ ...none, rules: { ghost: ['D:/gone'] } })[0]).toMatchObject({ name: 'ghost', isSeen: false, rule: ['D:/gone'], calls: [] })
+  expect(knownServers({ ...none, tools: [{ name: 'mcp__longhaul__review', serverName: 'longhaul' }], rules: { longhaul: [] } })).toEqual([])
+})
+
+test('cost comes from the newest snapshot, folders from every record', () => {
+  const older = { ...rec('a', 'D:/p/sam17', { kicad: 3 }, { kicad: { tools: 60, tokens: 3000 } }), startedAt: now - 9 * DAY }
+  older.base!.at = now - 9 * DAY
+  const newer = rec('b', 'D:/p/vina', {}, { kicad: { tools: 61, tokens: 3100 } })
+  const legacy = { ...rec('c', 'D:/p/x', { kicad: 1 }), root: undefined, project: 'legacy' }
+  const [k] = knownServers({ seen: [], tools: [], records: [older, newer, legacy], rules: {} })
+  expect([k.tools, k.tokens]).toEqual([61, 3100])
+  expect(k.calls).toEqual([['D:/p/sam17', 3], ['legacy', 1]])
+  expect(k.idleIn).toEqual(['D:/p/vina'])
+})
+
+test('a suggestion is off, only, or nothing', () => {
+  const base = { isOn: true, isSeen: true, idleIn: [] as string[], calls: [] as [string, number][] }
+  const folders = ['D:/p/sam17', 'D:/p/vina', 'D:/a/vina', 'D:/b/vina-bake', 'D:/Desktop/CLO Compare']
+  const s = (k: object, h = old) => suggestionsOf([{ key: 'kicad', name: 'kicad', tools: 60, ...base, ...k } as never], folders, h, now)
+  expect(s({})).toEqual([{ key: 'kicad', name: 'kicad', tools: 60, why: 'was not called in the last 21 days', command: '/longhaul mcp kicad off' }])
+  expect(s({}, { mature: true, since: now - 5 * DAY - 1000 })[0].why).toBe('was not called in the last 5 days')
+  expect(s({}, { mature: false, since: now - DAY })).toEqual([])
+  expect(s({ rule: [] })).toEqual([])
+  expect(s({ calls: [['D:/p/sam17', 9]], idleIn: ['D:/p/vina'] })[0]).toMatchObject({ why: 'was called only in sam17 in the last 21 days', command: '/longhaul mcp kicad only sam17' })
+  expect(s({ calls: [['D:/a/vina', 2]], idleIn: ['D:/p/sam17'] })[0].command).toBe('/longhaul mcp kicad only D:/a/vina') // the name vina would match other folders
+  expect(s({ calls: [['D:/Desktop/CLO Compare', 2]], idleIn: ['D:/p/sam17'] })[0].command).toBe('/longhaul mcp kicad only "CLO Compare"')
+  expect(s({ calls: [['D:/p/sam17', 9]] })).toEqual([]) // carried nowhere without a call
+  expect(s({ calls: [['a', 1], ['b', 1], ['c', 1], ['d', 1]], idleIn: ['e'] })).toEqual([]) // more than 3 folders
+})
+
+test('the list, as the design shows it', () => {
+  const known: Known[] = [
+    { key: 'claude_ai_Higgsfield', name: 'claude.ai Higgsfield', isOn: false, isSeen: true, rule: ['D:/Desktop/media'], tools: 170, tokens: 5800, calls: [['D:/Desktop/media', 41]], idleIn: [] },
+    { key: 'blender', name: 'blender', isOn: true, isSeen: true, tools: 10, tokens: 1400, calls: [], idleIn: ['D:/Desktop/projects/vina'] },
+  ]
+  const folders = ['D:/Desktop/media', 'D:/Desktop/projects/vina']
+  const o = { suggestions: suggestionsOf(known, folders, old, now), folders, here: { root: 'D:\\Desktop\\projects\\vina' }, isOn: true, history: old, now }
+  expect(renderList(known, o)).toBe(
+    [
+      'MCP servers',
+      '',
+      'claude.ai Higgsfield: 170 tools, about 5,800 tokens (est.) per session',
+      '  rule: only D:/Desktop/media (held in this folder)',
+      '  called in the last 21 days: media (41)',
+      'blender: 10 tools, about 1,400 tokens (est.) per session',
+      '  rule: none, loads everywhere',
+      '  not called in the last 21 days',
+      '  suggestion: /longhaul mcp blender off',
+    ].join('\n'),
+  )
+  expect(renderList(known, { ...o, here: { root: 'C:\\j\\media', real: 'D:\\Desktop\\media' } })).toContain('rule: only D:/Desktop/media (loads in this folder)')
+  expect(renderList(known, { ...o, isOn: false }).split('\n').slice(0, 3)).toEqual([MODE_OFF, '', 'MCP servers'])
+  expect(renderList(known, { ...o, isOn: false })).toContain('  rule: only D:/Desktop/media\n')
+})
+
+test('the list says what it does not know', () => {
+  const o = { suggestions: [], folders: [], here: { root: 'D:\\x' }, isOn: true, history: old, now }
+  const ghost: Known = { key: 'ghost', name: 'ghost', isOn: false, isSeen: false, rule: [], calls: [], idleIn: [] }
+  expect(renderList([ghost], o)).toBe(['MCP servers', '', 'ghost: cost not measured yet', '  rule: off in every folder', '  not seen in the last 21 days'].join('\n'))
+  const busy: Known = { ...ghost, isSeen: true, rule: undefined, calls: [['a', 6], ['b', 5], ['c', 4], ['d', 3], ['e', 2], ['f', 1], ['g', 1]] }
+  expect(renderList([busy], o)).toContain('  called in the last 21 days: a (6), b (5), c (4), d (3), e (2) and 2 more')
+  const young = { mature: false, since: new Date(2026, 10, 13, 9).getTime() }
+  expect(renderList([{ ...ghost, isSeen: true, rule: undefined }], { ...o, history: young })).toContain('  no calls recorded since 2026-11-13')
+  expect(renderList([busy], { ...o, history: young })).toContain('  called since 2026-11-13: a (6), b (5)')
+  expect(renderList([ghost], { ...o, history: young })).toContain('  not seen in the last 21 days')
+  expect(renderList([], o)).toBe('MCP servers\n\nNo MCP servers known yet.')
+})
 
 type Opt = { id: string; breakdown?: unknown; reject?: boolean; files?: Record<string, string>; store?: Map<string, unknown>; cwd?: string; history?: boolean; seeds?: object[]; ctx?: number; root?: string | (() => string); real?: Record<string, string> }
 function stub(on: any, o: Opt) {
