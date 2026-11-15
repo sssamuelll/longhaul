@@ -4,7 +4,7 @@ import { readConfig } from './config'
 test('defaults', async () => {
   expect(readConfig({})).toEqual({
     guardMode: 'auto', classifierMode: 'auto', budgetMode: 'auto',
-    healthMode: 'auto',
+    healthMode: 'auto', mcpMode: 'off',
     softLimit: 150000, hardLimit: 300000, rulesFile: '',
   })
 })
@@ -23,4 +23,9 @@ test('bad mode falls back', async () => {
 test('rules_file is a trimmed string, empty when unset or not a string', async () => {
   expect(readConfig({ rules_file: ' /r/rules.json ' }).rulesFile).toBe('/r/rules.json')
   expect(readConfig({ rules_file: 7 }).rulesFile).toBe('')
+})
+test('mcp_mode is on only when set to on', async () => {
+  expect(readConfig({}).mcpMode).toBe('off')
+  expect(readConfig({ mcp_mode: 'on' }).mcpMode).toBe('on')
+  expect(readConfig({ mcp_mode: 'auto' }).mcpMode).toBe('off')
 })

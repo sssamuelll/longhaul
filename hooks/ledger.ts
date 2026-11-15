@@ -33,13 +33,17 @@ export type SessionRecord = {
   decisions: Decision[]
   compactionLog: CompactionEntry[]
   base?: BaseSnapshot
+  root?: string // the session's folder: real path when the lookup gave one, / separators
 }
 
 const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
 
 export const totalCost = (c: StepCost): number => c.input + c.write + c.read + c.output
 
-export function newRecord(id: string, project: string, now: number): SessionRecord {
+export const KEEP_DAYS = 21 // a session record this long without activity leaves the store
+export const MIN_HISTORY = 3 * 86_400_000 // the mod's records must reach back this far before a server counts as unused
+
+export function newRecord(id: string, project: string, now: number, root?: string): SessionRecord {
   return {
     v: 1,
     id,
@@ -55,6 +59,7 @@ export function newRecord(id: string, project: string, now: number): SessionReco
     mcpCalls: {},
     decisions: [],
     compactionLog: [],
+    ...(root === undefined ? {} : { root }),
   }
 }
 
@@ -93,6 +98,7 @@ export function parse(stored: unknown, fresh: SessionRecord): SessionRecord | nu
     return {
       ...fresh,
       ...p,
+      root: typeof p.root === 'string' ? p.root : fresh.root,
       cost: { ...fresh.cost, ...p.cost },
       byBucket: { ...fresh.byBucket, ...p.byBucket },
       compactions: { ...fresh.compactions, ...p.compactions },

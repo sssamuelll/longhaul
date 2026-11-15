@@ -1,7 +1,8 @@
 import type { SessionUsage } from 'claude-code'
-import type { SessionRecord } from './ledger'
+import { MIN_HISTORY, type SessionRecord } from './ledger'
 import { localDate } from './budget'
 import { START_CAP } from './session'
+import { nameKey, type Suggestion } from './mcp'
 
 const DAY = 86_400_000
 const MIN_LINE = 40 // characters, after trimming and collapsing whitespace
@@ -10,7 +11,6 @@ const BIG_FILE_LINES = 200
 const BIG_FILE_TOKENS = 3000
 export const DUP_TOKENS = 500
 export const NOTICE_TOTAL = 60_000
-const MIN_HISTORY = 3 * DAY // the mod's records must reach back this far before a server counts as unused
 const WIRE = /^mcp__(.+?)__/ // same key as the call counts in register.tsx
 export const NOTICE_EVERY = 7 * DAY
 // Characters per token for tool names and server instructions; measured 2.1 on 2026-11-14 (12,078 characters, 5,749 tokens).
@@ -66,7 +66,7 @@ type Breakdown = NonNullable<NonNullable<SessionUsage['context']>['breakdown']>
 // A run of characters that are not letters or digits counts as one `_`: a heading spells the server as
 // /mcp does (`claude.ai Docs`), a tool's name spells it `claude_ai_Docs`, and both give the same key.
 export function headingKey(s: string): number {
-  const t = s.replace(/[^A-Za-z0-9]+/g, '_')
+  const t = nameKey(s)
   let h = 0x811c9dc5
   for (let i = 0; i < t.length; i++) h = Math.imul(h ^ t.charCodeAt(i), 0x01000193)
   return h >>> 0
@@ -151,13 +151,12 @@ export const unusedOf = (snap: BaseSnapshot, calls: Record<string, number>, matu
 
 const nameOf = (key: string, label?: string): string => (label ? `${key} (${label})` : key)
 
-export function healthAdvice(snap: BaseSnapshot, calls: Record<string, number>, history?: History): Advice[] {
+export function healthAdvice(snap: BaseSnapshot, suggestions: Suggestion[], note?: string): Advice[] {
   const out: Advice[] = []
-  for (const [s, v] of unusedOf(snap, calls, history?.mature ?? true))
-    out.push({
-      tokens: v.tokens,
-      text: `${nameOf(s, v.label)} has ${plural(v.tools, 'tool')}, about ${n(v.tokens)} tokens ${EST} in every session, and was not used this week: turn it off for projects that don't use it (${s.startsWith('plugin_') ? '/plugin' : '/mcp'}).`,
-    })
+  for (const s of suggestions) {
+    const v = Object.entries(snap.mcp).find(([k]) => nameKey(k) === nameKey(s.key))?.[1]
+    if (v) out.push({ tokens: v.tokens, text: `${s.name} has ${plural(v.tools, 'tool')}, about ${n(v.tokens)} tokens ${EST} in every session, and ${s.why}: ${s.command}` })
+  }
   for (const m of snap.memory)
     if (m.type !== 'Managed' && ((m.lines ?? 0) > BIG_FILE_LINES || m.tokens > BIG_FILE_TOKENS))
       out.push({
@@ -170,8 +169,9 @@ export function healthAdvice(snap: BaseSnapshot, calls: Record<string, number>, 
       tokens: d.tokens,
       text: `About ${n(d.tokens)} tokens ${EST} are ${plural(d.lines, 'line')} repeated across ${d.files.join(', ')}: keep the shared text in one file.`,
     })
-  if (!out.length) return [{ tokens: 0, text: 'Your sessions start light.' }]
-  return out.sort((a, b) => b.tokens - a.tokens)
+  const sorted = out.sort((a, b) => b.tokens - a.tokens)
+  if (note) sorted.unshift({ tokens: 0, text: note })
+  return sorted.length ? sorted : [{ tokens: 0, text: 'Your sessions start light.' }]
 }
 
 export function renderHealth(snap: BaseSnapshot, advice: Advice[], calls: Record<string, number> = {}, history?: History): string {

@@ -2,6 +2,7 @@ import { test, expect } from 'claude-code/testing'
 import { findDuplicates, headingKey, healthAdvice, instructionChars, instructionParts, renderHealth, snapshotOf, unusedOf, type BaseSnapshot } from './health'
 import { START_CAP } from './session'
 import { newRecord } from './ledger'
+import { MODE_OFF } from './mcp'
 
 const DAY = 86_400_000
 const now = new Date(2026, 9, 18, 12, 0).getTime()
@@ -41,36 +42,45 @@ const snap = (o: Partial<BaseSnapshot> = {}): BaseSnapshot => ({
   ...o,
 })
 
-test('healthAdvice: unused servers, long memory files, duplicates, and the all-clear', async () => {
+const sug = [
+  { key: 'blender', name: 'blender', tools: 10, why: 'was not called in the last 21 days', command: '/longhaul mcp blender off' },
+  { key: 'claude_ai_Higgsfield', name: 'claude.ai Higgsfield', tools: 170, why: 'was called only in media in the last 21 days', command: '/longhaul mcp claude.ai Higgsfield only media' },
+  { key: 'kicad', name: 'kicad', why: 'was not called in the last 21 days', command: '/longhaul mcp kicad off' }, // not in this snapshot
+]
+
+test('healthAdvice: suggestions, long memory files, duplicates, and the all-clear', async () => {
+  const s = snap({ mcp: { blender: { tools: 10, tokens: 1400 }, claude_ai_Higgsfield: { tools: 170, tokens: 5800, loaded: 0 } } })
+  expect(healthAdvice(s, sug).map((a) => a.text)).toEqual([
+    'claude.ai Higgsfield has 170 tools, about 5,800 tokens (est.) in every session, and was called only in media in the last 21 days: /longhaul mcp claude.ai Higgsfield only media',
+    'blender has 10 tools, about 1,400 tokens (est.) in every session, and was not called in the last 21 days: /longhaul mcp blender off',
+  ])
+  expect(healthAdvice(s, [])).toEqual([{ tokens: 0, text: 'Your sessions start light.' }])
+  expect(healthAdvice(s, [], MODE_OFF)).toEqual([{ tokens: 0, text: MODE_OFF }])
+  expect(healthAdvice(s, sug, MODE_OFF).map((a) => a.text)[0]).toBe(MODE_OFF)
+  expect(healthAdvice(s, sug, MODE_OFF).length).toBe(3)
   const adv = healthAdvice(
     snap({
+      mcp: {},
       memory: [{ path: '/p/BIG.md', tokens: 4000, lines: 120 }, { path: '/p/LONG.md', tokens: 900, lines: 250 }],
       duplicate: { lines: 4, tokens: 700, files: ['/p/a.md', '/p/b.md'] },
     }),
-    { github: 3 },
+    [],
   )
   const text = adv.map((a) => a.text).join('\n')
-  expect(adv.length).toBe(5) // linear, tiny, BIG, LONG, duplicates
-  expect(text).toContain('linear')
-  expect(text).toContain("turn it off for projects that don't use it (/mcp)")
-  expect(text).toContain('12 tools')
-  expect(text).toContain('16,000 tokens (est.)')
-  expect(text).not.toContain('github')
+  expect(adv.length).toBe(3) // BIG, LONG, duplicates
   expect(text).toContain('/p/BIG.md')
   expect(text).toContain('/p/LONG.md')
   expect(text).toContain('shorten')
   expect(text).toContain('keep the shared text in one file')
   expect(text).toContain('/p/a.md')
   expect(text).not.toContain('!')
-  const light = healthAdvice(snap({ mcp: { github: { tools: 30, tokens: 25_000 } } }), { github: 1 })
-  expect(light.map((a) => a.text)).toEqual(['Your sessions start light.'])
-  const low = healthAdvice(snap({ mcp: {}, duplicate: { lines: 2, tokens: 499, files: ['/a', '/b'] } }), {})
+  const low = healthAdvice(snap({ mcp: {}, duplicate: { lines: 2, tokens: 499, files: ['/a', '/b'] } }), [])
   expect(low.map((a) => a.text)).toEqual(['Your sessions start light.'])
 })
 
 test('renderHealth lists items biggest first, marks estimates, and shows no contents', async () => {
   const s = snap({ duplicate: { lines: 3, tokens: 700, files: ['/p/a.md', '/p/b.md'] } })
-  const out = renderHealth(s, healthAdvice(s, { github: 3 }), { github: 3 })
+  const out = renderHealth(s, healthAdvice(s, []), { github: 3 })
   expect(out.indexOf('github')).toBeLessThan(out.indexOf('linear'))
   expect(out.indexOf('linear')).toBeLessThan(out.indexOf('skills'))
   expect(out).toMatch(/github.*used this week/)
@@ -271,7 +281,7 @@ test('a breakdown that keeps failing is tried at most twice per session', async 
 
 test('a memory file with unknown size is advised by tokens only, with no line count', async () => {
   const snapU: BaseSnapshot = { ...snap(), mcp: {}, memory: [{ path: '/p/HUGE.md', tokens: 5000 }] }
-  const adv = healthAdvice(snapU, {})
+  const adv = healthAdvice(snapU, [])
   expect(adv[0].text).toContain('/p/HUGE.md')
   expect(adv[0].text).not.toMatch(/line/)
   const out = renderHealth(snapU, adv)
@@ -356,7 +366,7 @@ test('3: duplicates still raise the heads-up without history', async ($, on) => 
 })
 
 test('3: advice and list by history flag', async () => {
-  const a = healthAdvice(snap(), {}, { mature: false, since: now })
+  const a = healthAdvice(snap(), [])
   expect(a.map((x) => x.text).join('\n')).not.toContain('/mcp')
   expect(renderHealth(snap(), a, {}, { mature: false, since: new Date(2026, 9, 16).getTime() })).toContain('no calls recorded since 2026-10-16')
 })
@@ -432,14 +442,12 @@ test('9: a light session reads no records for the heads-up', async ($, on) => {
   expect(s.calls.lists).toBe(0)
 })
 
-test('11: a Managed memory file gets no shorten advice; a plugin server is turned off with /plugin', async () => {
+test('11: a Managed memory file gets no shorten advice', async () => {
   const a = healthAdvice(
     snap({ mcp: { plugin_foo_bar: { tools: 3, tokens: 12_000, label: 'plugin:foo:bar' } }, memory: [{ path: '/m/MANAGED.md', tokens: 5000, lines: 300, type: 'Managed' }] }),
-    {},
+    [],
   )
   const text = a.map((x) => x.text).join('\n')
-  expect(text).toContain('/plugin')
-  expect(text).not.toContain('(/mcp)')
   expect(text).not.toContain('MANAGED.md')
 })
 
@@ -501,17 +509,17 @@ test('renderHealth marks on-demand servers and shows the measured start', async 
     mcp: { lazy: { tools: 170, tokens: 6040, loaded: 0 }, mixed: { tools: 40, tokens: 9000, loaded: 12 }, github: { tools: 30, tokens: 25_000 } },
     measured: 68_400,
   })
-  const adv = healthAdvice(s, { github: 1 })
+  const adv = healthAdvice(s, [{ key: 'lazy', name: 'lazy', why: 'was not called in the last 21 days', command: '/longhaul mcp lazy off' }])
   const out = renderHealth(s, adv, { github: 1 })
   expect(out).toContain('lazy MCP: 170 tools (on demand), 6,040 tokens (est.), not used this week')
   expect(out).toContain('mixed MCP: 40 tools (12 loaded), 9,000 tokens (est.), not used this week')
   expect(out).toContain('github MCP: 30 tools, 25,000 tokens (est.), used this week')
   expect(out).toContain('Sessions start at 93,000 tokens (est.); the first request measured 68,400. What loads before any work:')
-  expect(adv.map((a) => a.text).join('\n')).toContain('lazy has 170 tools, about 6,040 tokens (est.) in every session, and was not used this week')
+  expect(adv.map((a) => a.text).join('\n')).toContain('lazy has 170 tools, about 6,040 tokens (est.) in every session, and was not called in the last 21 days: /longhaul mcp lazy off')
 })
 
 test('renderHealth: a snapshot stored before this change reads as before', async () => {
-  const out = renderHealth(snap(), healthAdvice(snap(), { github: 3 }), { github: 3 })
+  const out = renderHealth(snap(), healthAdvice(snap(), []), { github: 3 })
   expect(out).toContain('Sessions start at 93,000 tokens (est.). What loads before any work:')
   expect(out).toContain('github MCP: 30 tools, 25,000 tokens (est.), used this week')
   expect(out).not.toContain('measured')

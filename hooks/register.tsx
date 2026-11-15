@@ -5,17 +5,18 @@ import { contextOf } from './prices'
 import { KEEP_LIST, REASON_LABEL, withKeepList, buildCompactInstructions, setSoftLimit, getSoftLimit, declineAsk, resetDeclines, clearHardDecline, declines, isSelfCompacting, setSelfCompacting, type Compacted, type CompactContext } from './compact'
 import { lastMainCtx, setMainCtx, setCompactPending, isCompactPending, setFloor, takeAboveSoftLog, newEpoch, epoch, peekRecord, setRecord, getFloor, getEpochFiles, addEpochFiles, clearEpochFiles, getStartCtx, addInstructionParts, getInstructionParts, markFloorPending, notePrompt, measureStep } from './session'
 import { emptyFacts, observeTool, isTaskDone, isNewTask, guardDecision, type TurnFacts } from './guard'
-import { addStep, capRecord, lastActivity, newRecord, parse, projectOf, totalCost, MAX_RATE, SESSION_PREFIX, type CompactReason, type SessionRecord } from './ledger'
+import { addStep, capRecord, lastActivity, newRecord, KEEP_DAYS, parse, projectOf, totalCost, MAX_RATE, SESSION_PREFIX, type CompactReason, type SessionRecord } from './ledger'
 import { SEP, NOTICE_MCP, localDate, parseReset, pace } from './budget'
 import { eventText, meterSegs } from './band'
-import { buildReport, renderText, unusedServers, windowOf, type ReportData } from './report'
+import { buildReport, renderText, windowOf, type ReportData } from './report'
 import { NOTICE_TOTAL, NOTICE_EVERY, DUP_TOKENS, instructionParts, snapshotOf, unusedOf, addCalls, historyOf, healthAdvice, renderHealth, type BaseSnapshot } from './health'
 import { DEFAULT_RULES, parseRules, takeRulesWarn, type Rule } from './rules'
+import type { History } from './health'
+import { parseCommand, HELP, normPath, RULES_KEY, readRuleSet, findRule, isProtected, holds, holdMessage, checkPattern, noteSeen, seenServers, knownServers, hasTools, foldersOf, suggestionsOf, MODE_OFF, renderList, resolveServer, planVerb, connectLine, NOT_SAVED, NOT_READ, NO_FOLDER, type Command, type Here, type RuleSet, type Known, type Typed } from './mcp'
 import { classify } from './classifier'
 import { HANDOFF, ASK_HANDOFF, SUBAGENT_NOTE, REVIEW_TOOL, OUTCOMES, isExpensiveMain, noteEdit, applyReview, ageDecisions, getRules, setRules, clearMainEdited, resetHandoff } from './handoff'
 
 const DAY = 86_400_000
-const KEEP_DAYS = 21 // a session record this long without activity leaves the store
 
 // Guard state, memory only: nothing about prompts is ever written down.
 let facts: TurnFacts = emptyFacts()
@@ -79,8 +80,46 @@ async function saveRecord($: EngineInterface, rec: SessionRecord): Promise<void>
   }
 }
 
-async function loadRecord($: EngineInterface, id: string, project: string, now: number): Promise<SessionRecord> {
-  const fresh = newRecord(id, project, now)
+// The folder the session runs in; cwd() when root() is missing or throws.
+async function rootOf($: EngineInterface): Promise<string> {
+  try {
+    const r = await $.session.root()
+    if (typeof r === 'string' && r) return r
+  } catch {
+    // fall back to cwd
+  }
+  return $.session.cwd()
+}
+
+async function statReal($: EngineInterface, path: string): Promise<string | undefined> {
+  try {
+    const r = (await $.fs.stat(path, { resolve: true })).realPath
+    return typeof r === 'string' && r ? r : undefined
+  } catch {
+    return undefined
+  }
+}
+
+// One lookup per distinct root, shared by raises that arrive together.
+// ponytail: a failed lookup is cached until the process ends; retry on failure if a folder is ever compared by the wrong spelling
+const realPaths = new Map<string, Promise<string | undefined>>()
+
+async function folderLookup($: EngineInterface): Promise<Here> {
+  const root = await rootOf($)
+  let p = realPaths.get(root)
+  if (!p) realPaths.set(root, (p = statReal($, root)))
+  return { root, real: await p }
+}
+
+// For the MCP rules: an unknown folder throws, so the hook passes the server on and gather falls back to an empty root.
+async function sessionFolders($: EngineInterface): Promise<Here> {
+  const here = await folderLookup($)
+  if (!here.root) throw new Error('the session folder is unknown')
+  return here
+}
+
+async function loadRecord($: EngineInterface, id: string, project: string, now: number, root: string): Promise<SessionRecord> {
+  const fresh = newRecord(id, project, now, root)
   try {
     const stored = await $.store.get(SESSION_PREFIX + id)
     return (stored !== undefined && parse(stored, fresh)) || fresh
@@ -117,14 +156,14 @@ async function listRecords($: EngineInterface, sinceMs: number): Promise<Session
 
 async function switchTo($: EngineInterface, old: SessionRecord | null, id: string): Promise<SessionRecord> {
   if (old) await saveRecord($, old) // nothing in memory is discarded
-  const cwd = await $.session.cwd()
+  const { root, real } = await folderLookup($)
   let now = Date.now()
   try {
     now = await $.clock.now()
   } catch {
     // the wall clock will do
   }
-  const next = await loadRecord($, id, projectOf(cwd), now)
+  const next = await loadRecord($, id, projectOf(root), now, normPath(real ?? root))
   setRecord(next)
   return next
 }
@@ -363,7 +402,7 @@ async function healthAfterFirstTurn($: EngineInterface, cfg: Config, ctx: TurnCt
 }
 
 // This session's snapshot, else the latest of the same project, else the latest overall.
-async function runHealth($: EngineInterface): Promise<{ text: string }> {
+async function runHealth($: EngineInterface, cfg: Config): Promise<{ text: string }> {
   const now = await $.clock.now()
   const rec = await current($)
   const stored = await weekRecords($, now)
@@ -373,7 +412,10 @@ async function runHealth($: EngineInterface): Promise<{ text: string }> {
   if (!pick?.base) return { text: "No snapshot yet: it's taken after the first reply of a session." }
   const calls = addCalls(week)
   const history = historyOf(week, now)
-  return { text: `Snapshot from project ${pick.project}.\n\n${renderHealth(pick.base, healthAdvice(pick.base, calls, history), calls, history)}` }
+  const g = await gather($) // ponytail: lists the records a second time, after weekRecords
+  const suggestions = g.rules ? suggestionsOf(g.known, foldersOf(g.records), g.history, g.now) : []
+  const note = cfg.mcpMode === 'off' && g.rules && Object.keys(g.rules).length ? MODE_OFF : undefined
+  return { text: `Snapshot from project ${pick.project}.\n\n${renderHealth(pick.base, healthAdvice(pick.base, suggestions, note), calls, history)}` }
 }
 
 // ---- the report ----
@@ -381,14 +423,9 @@ async function runHealth($: EngineInterface): Promise<{ text: string }> {
 async function reportFor($: EngineInterface, cfg: Config): Promise<ReportData> {
   const now = await $.clock.now()
   const records = await listRecords($, now - KEEP_DAYS * DAY)
-  let unused: string[] = []
-  try {
-    const tools = await $.tool.list()
-    unused = unusedServers(tools.map((t) => t.name), windowOf(records, now).week)
-  } catch (err) {
-    fail($, 'list tools for report', err)
-  }
-  return buildReport(records, now, unused, cfg)
+  const g = await gather($) // ponytail: lists the records a second time; the report's own sessions must not include the current one
+  const suggestions = g.rules ? suggestionsOf(g.known, foldersOf(g.records), g.history, g.now) : []
+  return buildReport(records, now, suggestions, cfg)
 }
 
 async function runReport($: EngineInterface, cfg: Config): Promise<{ text: string }> {
@@ -396,9 +433,105 @@ async function runReport($: EngineInterface, cfg: Config): Promise<{ text: strin
   return { text: renderText(d) }
 }
 
+// ---- MCP rules ----
+
+type Gathered = { now: number; records: SessionRecord[]; rules: RuleSet | null; here: Here; known: Known[]; tools: { name: string; serverName?: string }[]; history: History } // rules null: the store refused the read
+
+// Every kept record with this session's on top. A failing source counts as empty, except the rules.
+async function gather($: EngineInterface): Promise<Gathered> {
+  const now = await $.clock.now()
+  const stored = await listRecords($, now - KEEP_DAYS * DAY)
+  let records = stored
+  try {
+    const rec = await current($)
+    records = [...stored.filter((r) => r.id !== rec.id), rec]
+  } catch (err) {
+    fail($, 'mcp current record', err)
+  }
+  let rules: RuleSet | null
+  try {
+    rules = readRuleSet(await $.store.get(RULES_KEY)) ?? {} // a stored value that is not a rule set counts as {}
+  } catch {
+    rules = null
+  }
+  let tools: { name: string; serverName?: string }[] = []
+  try {
+    tools = (await $.session.usage({ breakdown: 'summary' }))?.context?.breakdown?.mcpTools ?? []
+  } catch {
+    // no breakdown: the servers are known from the hook and the records
+  }
+  let here: Here = { root: '' }
+  try {
+    here = await sessionFolders($)
+  } catch (err) {
+    fail($, 'mcp folder', err)
+  }
+  const known = knownServers({ seen: seenServers(), tools, records, rules: rules ?? {} })
+  return { now, records, rules, here, known, tools, history: historyOf(records, now) }
+}
+
+async function holdsHere($: EngineInterface, server: string, provider?: string): Promise<boolean> {
+  noteSeen(server, false)
+  if (isProtected(server, provider)) return false
+  const rules = readRuleSet(await $.store.get(RULES_KEY))
+  if (!rules || !findRule(rules, server)) return false
+  const here = await sessionFolders($)
+  const hold = holds(rules, server, provider, [here.root, ...(here.real ? [here.real] : [])])
+  noteSeen(server, hold)
+  return hold
+}
+
+async function runMcp($: EngineInterface, cfg: Config, cmd: Command): Promise<{ text: string }> {
+  const g = await gather($)
+  if (!g.rules) return { text: NOT_READ }
+  const isOn = cfg.mcpMode === 'on'
+  if (cmd.kind !== 'verb') {
+    const folders = foldersOf(g.records)
+    return { text: renderList(g.known, { suggestions: suggestionsOf(g.known, folders, g.history, g.now), folders, here: g.here, isOn, history: g.history, now: g.now }) }
+  }
+  const k = resolveServer(g.known, cmd.server)
+  if ('error' in k) return { text: k.error }
+  if (cmd.verb === 'here' && !g.here.root) return { text: NO_FOLDER }
+  const typed: Typed[] = []
+  if (cmd.verb === 'only') {
+    const checked = cmd.patterns.map(checkPattern)
+    for (const c of checked) if ('error' in c) return { text: c.error }
+    for (const c of checked as { pattern: string; isPath: boolean }[]) {
+      if (!c.isPath) {
+        typed.push(c)
+        continue
+      }
+      const real = await statReal($, c.pattern)
+      typed.push(real ? { pattern: normPath(real), isPath: true } : { ...c, isMissing: true })
+    }
+  }
+  const plan = planVerb(k, cmd.verb, typed, g.rules, g.here, isOn)
+  if (plan.rules) {
+    try {
+      await $.store.set(RULES_KEY, plan.rules)
+    } catch (err) {
+      fail($, 'save mcp rule', err)
+      return { text: NOT_SAVED }
+    }
+  }
+  const lines = [...plan.lines]
+  if (plan.connect) {
+    let answer: { isConnected?: boolean; message?: string; reason?: string } | undefined
+    try {
+      answer = await $.mcp.connect(k.name)
+    } catch (err) {
+      answer = { isConnected: false, message: err instanceof Error ? err.message : String(err) }
+    }
+    // connect takes the /mcp name. A server the hook never saw (mcp_mode turned on in this session) is known by its tool-name spelling, which the engine does not list
+    if (answer?.reason === 'unlisted' && hasTools(g.tools, k.key)) answer = { isConnected: true }
+    lines.splice(1, 0, connectLine(answer))
+  }
+  return { text: lines.join('\n') }
+}
+
 async function registerReport($: EngineInterface): Promise<void> {
   try {
-    await $.command.register({ name: 'longhaul', description: "Where this week's tokens went and why", argumentHint: '[health]' })
+    await $.command.register({ name: 'longhaul', description: "Where this week's tokens went and why", argumentHint: '[health | mcp]' })
   } catch (err) {
     fail($, 'register longhaul command', err)
   }
@@ -752,11 +885,27 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
+  if (cfg.mcpMode === 'on')
+    on('mcp.connect', async ($, e, next) => {
+      let hold = false
+      try {
+        hold = await holdsHere($, e.server, e.provider?.plugin)
+      } catch (err) {
+        fail($, 'mcp rule', err)
+      }
+      return hold ? { value: { isConnected: false, reason: 'disabled', message: holdMessage(e.server) } } : next(e)
+    })
+
   on('command.run', { command: 'longhaul' }, async ($, e) => {
     try {
-      const args = (e.args ?? '').trim().toLowerCase()
-      if (args === 'health') return await runHealth($)
-      return await runReport($, cfg)
+      const cmd = parseCommand(e.args ?? '')
+      switch (cmd.kind) {
+        case 'health': return await runHealth($, cfg)
+        case 'help': return { text: `${cmd.why}\n\n${HELP}` }
+        case 'list':
+        case 'verb': return await runMcp($, cfg, cmd)
+        default: return await runReport($, cfg)
+      }
     } catch (err) {
       fail($, 'longhaul report', err)
       return { text: 'longhaul: could not build the report.' }
