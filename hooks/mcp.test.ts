@@ -1,6 +1,7 @@
 import { test, expect } from 'claude-code/testing'
-import { nameKey, normPath, checkPattern, matchesFolder, readRuleSet, findRule, isProtected, holds, holdMessage } from './mcp'
+import { parseCommand, nameKey, normPath, checkPattern, matchesFolder, readRuleSet, findRule, isProtected, holds, holdMessage } from './mcp'
 import { headingKey } from './health'
+import { newRecord } from './ledger'
 
 test('one key for a server however it is spelled', () => {
   expect(nameKey('claude.ai Higgsfield')).toBe('claude_ai_Higgsfield')
@@ -80,4 +81,90 @@ test("the mod's own server is never held", () => {
   expect(isProtected('Longhaul')).toBe(true) // any case
   expect(holdMessage('kicad')).toBe('longhaul holds kicad in this folder: /longhaul mcp kicad here turns it on.')
   expect(normPath('D:\\Desktop\\media\\')).toBe('D:/Desktop/media')
+})
+
+test('the command line is read into one of five things', () => {
+  expect(parseCommand('')).toEqual({ kind: 'report' })
+  expect(parseCommand('  HEALTH ')).toEqual({ kind: 'health' })
+  expect(parseCommand('mcp')).toEqual({ kind: 'list' })
+  expect(parseCommand('mcp claude.ai Higgsfield only media D:/Desktop/media')).toEqual({ kind: 'verb', server: 'claude.ai Higgsfield', verb: 'only', patterns: ['media', 'D:/Desktop/media'] })
+  expect(parseCommand('MCP kicad Only "D:/Desktop/CLO Compare" sam17')).toEqual({ kind: 'verb', server: 'kicad', verb: 'only', patterns: ['D:/Desktop/CLO Compare', 'sam17'] })
+  expect(parseCommand('mcp kicad HERE')).toEqual({ kind: 'verb', server: 'kicad', verb: 'here', patterns: [] })
+  expect(parseCommand('mcp kicad everywhere')).toEqual({ kind: 'verb', server: 'kicad', verb: 'everywhere', patterns: [] })
+  expect(parseCommand('mcp kicad off')).toEqual({ kind: 'verb', server: 'kicad', verb: 'off', patterns: [] })
+})
+
+test('what is not understood gets one line that says so', () => {
+  expect(parseCommand('page')).toEqual({ kind: 'help', why: 'There is no "page" command.' })
+  expect(parseCommand('report')).toEqual({ kind: 'help', why: 'There is no "report" command.' })
+  expect(parseCommand('health now')).toEqual({ kind: 'help', why: 'There is no "health now" command.' })
+  expect(parseCommand('mcp kicad')).toEqual({ kind: 'help', why: 'After "kicad", type only, here, everywhere or off.' })
+  expect(parseCommand('mcp kicad sometimes sam17')).toEqual({ kind: 'help', why: 'After "kicad sometimes sam17", type only, here, everywhere or off.' })
+  expect(parseCommand('mcp only sam17')).toEqual({ kind: 'help', why: 'Name the server before only.' })
+  expect(parseCommand('mcp kicad only')).toEqual({ kind: 'help', why: 'After only, type at least one folder name or full path.' })
+  expect(parseCommand('mcp kicad here sam17')).toEqual({ kind: 'help', why: 'Type here with nothing after it.' })
+})
+
+// ---- wiring (helpers copied from health.test.ts) ----
+
+const DAY = 86_400_000
+const now = new Date(2026, 9, 18, 12, 0).getTime()
+const norm = (p: string): string => p.replace(/\\/g, '/').replace(/^[A-Za-z]:/, '')
+
+type Opt = { id: string; breakdown?: unknown; reject?: boolean; files?: Record<string, string>; store?: Map<string, unknown>; cwd?: string; history?: boolean; seeds?: object[]; ctx?: number }
+function stub(on: any, o: Opt) {
+  const files: Record<string, string> = { ...(o.files ?? {}) } // memory files
+  const store = o.store ?? new Map<string, unknown>()
+  if (o.history !== false) store.set('session:old-1', newRecord('old-1', 'proj', now - 4 * DAY)) // four days of history, so unused-server verdicts are due
+  for (const r of o.seeds ?? []) store.set(`session:${(r as { id: string }).id}`, r)
+  const state = new Map<string, unknown>()
+  const calls = { breakdown: [] as unknown[], lists: 0 }
+  const find = (p: string): string | undefined => Object.keys(files).find((k) => norm(k) === norm(p))
+  on('session.id', async () => ({ value: o.id }))
+  on('session.cwd', async () => ({ value: o.cwd ?? '/w/p' }))
+  on('fs.read', async (_$: any, e: any) => {
+    const k = find(e.path)
+    return k ? { value: files[k] } : { deny: 'ENOENT' }
+  })
+  on('ui.log', async () => ({ value: undefined }))
+  on('ui.status', async () => ({ value: undefined }))
+  on('clock.now', async () => ({ value: now }))
+  on('store.get', async (_$: any, e: any) => ({ value: store.get(e.key) }))
+  on('store.set', async (_$: any, e: any) => (store.set(e.key, JSON.parse(JSON.stringify(e.value))), { value: undefined }))
+  on('store.delete', async (_$: any, e: any) => (store.delete(e.key), { value: undefined }))
+  on('store.keys', async () => (calls.lists++, { value: [...store.keys()] }))
+  on('state.get', async (_$: any, e: any) => ({ value: { value: state.get(e.key), version: 0 } as never }))
+  on('state.set', async (_$: any, e: any) => (state.set(e.key, e.value), { value: { isSet: true, version: 1 } as never }))
+  on('tool.list', async () => ({ value: [] }))
+  on('ui.render', async () => ({ type: 'Box', props: {}, children: [] }) as never)
+  on('session.usage', async (_$: any, e: any) => {
+    if (e?.breakdown) calls.breakdown.push(e.breakdown)
+    if (o.reject && e?.breakdown) return { deny: 'no breakdown' }
+    return { value: { rateLimits: [], context: e?.breakdown && o.breakdown ? { breakdown: o.breakdown } : {} } as never }
+  })
+  on('turn.complete', async () => ({ text: '' }))
+  on('prompt.attachment', async (_$: any, e: any) => ({ text: e.text }))
+  on('session.start', async () => ({ cwd: '/w/p' }))
+  if (o.ctx) {
+    on('turn.step', async function* () {
+      return { turnId: 't', index: 0, answer: '', toolUses: [], usage: { model: 'claude-opus-5-5', input_tokens: 0, output_tokens: 0, cache_read_input_tokens: o.ctx, cache_creation_input_tokens: 0 } } as never
+    })
+  }
+  return { store, state, calls }
+}
+
+const started = new WeakSet<object>()
+const start = ($: any, interactive = true) => (started.add($), $.session.start({ cwd: '/w/p', surface: null, isInteractive: interactive }))
+const turn = async ($: any, id = 't') => {
+  if (!started.has($)) await start($)
+  await $.turn.complete({ turnId: id, reason: 'done', answer: '', durationMs: 1, isAborted: false } as never)
+}
+
+test('an unknown subcommand prints the help and not the report', async ($, on) => {
+  stub(on, { id: 'c1' })
+  await start($)
+  const r: any = await $.command.run({ command: 'longhaul', args: 'page' })
+  expect(r.text.startsWith('There is no "page" command.\n\n/longhaul ')).toBe(true)
+  expect(r.text).toContain('/longhaul mcp <server> here               also load in this folder')
+  expect(r.text).not.toContain('longhaul report')
 })

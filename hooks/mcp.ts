@@ -57,3 +57,40 @@ export function holds(rules: RuleSet | null, server: string, provider: string | 
 }
 
 export const holdMessage = (server: string): string => `longhaul holds ${server} in this folder: /longhaul mcp ${server} here turns it on.`
+
+export type Verb = 'only' | 'here' | 'everywhere' | 'off'
+export type Command =
+  | { kind: 'report' } | { kind: 'health' } | { kind: 'list' }
+  | { kind: 'verb'; server: string; verb: Verb; patterns: string[] }
+  | { kind: 'help'; why: string }
+
+const VERBS: string[] = ['only', 'here', 'everywhere', 'off']
+
+export const HELP = [
+  '/longhaul                                 the weekly report',
+  '/longhaul health                          what every session loads before any work',
+  '/longhaul mcp                             MCP servers: cost, where they are used, rule',
+  '/longhaul mcp <server> only <folder…>     load only in folders that match',
+  '/longhaul mcp <server> here               also load in this folder',
+  '/longhaul mcp <server> everywhere         remove the rule',
+  '/longhaul mcp <server> off                off in every folder',
+].join('\n')
+
+// Words split on spaces; a part in double quotes is one word.
+export function parseCommand(args: string): Command {
+  const words = [...args.matchAll(/"([^"]*)"|(\S+)/g)].map((m) => m[1] ?? m[2])
+  const head = words[0]?.toLowerCase()
+  if (head === undefined) return { kind: 'report' }
+  if (head === 'health' && words.length === 1) return { kind: 'health' }
+  if (head !== 'mcp') return { kind: 'help', why: `There is no "${words.join(' ')}" command.` }
+  const rest = words.slice(1)
+  if (!rest.length) return { kind: 'list' }
+  const at = rest.findIndex((w) => VERBS.includes(w.toLowerCase()))
+  if (at === -1) return { kind: 'help', why: `After "${rest.join(' ')}", type only, here, everywhere or off.` }
+  const verb = rest[at].toLowerCase() as Verb
+  const patterns = rest.slice(at + 1)
+  if (at === 0) return { kind: 'help', why: `Name the server before ${verb}.` }
+  if (verb === 'only' && !patterns.length) return { kind: 'help', why: 'After only, type at least one folder name or full path.' }
+  if (verb !== 'only' && patterns.length) return { kind: 'help', why: `Type ${verb} with nothing after it.` }
+  return { kind: 'verb', server: rest.slice(0, at).join(' '), verb, patterns }
+}

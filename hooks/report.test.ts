@@ -108,9 +108,9 @@ function stub(on: any) {
   on('command.register', async () => ({ value: undefined }))
 }
 
-test('/longhaul prints the text report, whatever the arguments', async ($, on) => {
+test('/longhaul prints the text report when it gets no argument', async ($, on) => {
   stub(on)
-  for (const args of ['weird', ' Page ']) {
+  for (const args of ['', '   ']) {
     const r = await $.command.run({ command: 'longhaul', args })
     expect(r.text).toContain('Biggest sessions')
     expect(r.text).toContain('slack (1 tool)')

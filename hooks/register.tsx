@@ -11,6 +11,7 @@ import { eventText, meterSegs } from './band'
 import { buildReport, renderText, unusedServers, windowOf, type ReportData } from './report'
 import { NOTICE_TOTAL, NOTICE_EVERY, DUP_TOKENS, instructionParts, snapshotOf, unusedOf, addCalls, historyOf, healthAdvice, renderHealth, type BaseSnapshot } from './health'
 import { DEFAULT_RULES, parseRules, takeRulesWarn, type Rule } from './rules'
+import { parseCommand, HELP } from './mcp'
 import { classify } from './classifier'
 import { HANDOFF, ASK_HANDOFF, SUBAGENT_NOTE, REVIEW_TOOL, OUTCOMES, isExpensiveMain, noteEdit, applyReview, ageDecisions, getRules, setRules, clearMainEdited, resetHandoff } from './handoff'
 
@@ -398,7 +399,7 @@ async function runReport($: EngineInterface, cfg: Config): Promise<{ text: strin
 
 async function registerReport($: EngineInterface): Promise<void> {
   try {
-    await $.command.register({ name: 'longhaul', description: "Where this week's tokens went and why", argumentHint: '[health]' })
+    await $.command.register({ name: 'longhaul', description: "Where this week's tokens went and why", argumentHint: '[health | mcp]' })
   } catch (err) {
     fail($, 'register longhaul command', err)
   }
@@ -754,9 +755,14 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: 'longhaul' }, async ($, e) => {
     try {
-      const args = (e.args ?? '').trim().toLowerCase()
-      if (args === 'health') return await runHealth($)
-      return await runReport($, cfg)
+      const cmd = parseCommand(e.args ?? '')
+      switch (cmd.kind) {
+        case 'health': return await runHealth($)
+        case 'help': return { text: `${cmd.why}\n\n${HELP}` }
+        case 'list':
+        case 'verb': return { text: 'MCP rules are not built yet.' }
+        default: return await runReport($, cfg)
+      }
     } catch (err) {
       fail($, 'longhaul report', err)
       return { text: 'longhaul: could not build the report.' }
