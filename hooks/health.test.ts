@@ -1,5 +1,5 @@
 import { test, expect } from 'claude-code/testing'
-import { findDuplicates, healthAdvice, renderHealth, snapshotOf, unusedOf, type BaseSnapshot } from './health'
+import { findDuplicates, healthAdvice, instructionChars, instructionParts, renderHealth, snapshotOf, unusedOf, type BaseSnapshot } from './health'
 import { START_CAP } from './session'
 import { newRecord } from './ledger'
 
@@ -468,4 +468,29 @@ test('snapshotOf keeps the measured start only when it is a clean measure', asyn
   expect(snapshotOf(b, new Map(), 1, { startCtx: 0 }).measured).toBeUndefined()
   expect(snapshotOf(b, new Map(), 1, { startCtx: 68_400 }).measured).toBe(68_400)
   expect(snapshotOf(b, new Map(), 1, { startCtx: START_CAP }).measured).toBeUndefined()
+})
+
+const part = (name: string, chars: number): string => `## ${name}\n`.padEnd(chars - 1, 'x') + '\n'
+const INSTR = `# MCP Server Instructions\n\n${part('lazy', 400)}${part('mixed', 100)}${part('longhaul', 76)}`
+
+test('instructionParts gives each server part its length, heading included', async () => {
+  expect(instructionParts(INSTR)).toEqual([['lazy', 400], ['mixed', 100], ['longhaul', 76]])
+  expect(instructionParts('no headings here')).toEqual([])
+  expect(instructionParts('')).toEqual([])
+})
+
+test('instructionChars adds a heading that is not a server to the server before it', async () => {
+  const parts: [string, number][] = [['Intro', 30], ['lazy', 400], ['Notes', 50], ['mixed', 100]]
+  expect(instructionChars(parts, ['lazy', 'mixed', 'github'])).toEqual({ lazy: 450, mixed: 100 })
+})
+
+test('snapshotOf adds instructions at 2 characters per token, found by the /mcp name', async () => {
+  const s = snapshotOf(bd({ mcpTools: lazyTools }) as never, new Map(), 1, { instructions: instructionParts(INSTR) })
+  expect(s.mcp.lazy).toEqual({ tools: 2, tokens: 216, loaded: 0 }) // 16 + 400 / 2
+  expect(s.mcp.mixed.tokens).toBe(4057) // 4007 + 100 / 2
+  expect(s.mcp.github.tokens).toBe(11_000)
+  expect(s.mcp.longhaul).toBeUndefined()
+  const docs = [{ name: 'mcp__claude_ai_Docs__read', serverName: 'claude.ai Docs', tokens: 500, isLoaded: true }]
+  const d = snapshotOf(bd({ mcpTools: docs }) as never, new Map(), 1, { instructions: [['claude.ai Docs', 1000]] })
+  expect(d.mcp.claude_ai_Docs).toEqual({ tools: 1, tokens: 1000, label: 'claude.ai Docs' }) // 500 + 1000 / 2
 })

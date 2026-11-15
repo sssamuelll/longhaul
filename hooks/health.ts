@@ -62,13 +62,38 @@ export function findDuplicates(files: { path: string; text: string }[]): BaseSna
 
 type Breakdown = NonNullable<NonNullable<SessionUsage['context']>['breakdown']>
 
+// The parts of the MCP Server Instructions text: one per line starting `## `, named as /mcp lists the server,
+// with its length in characters. Only lengths are kept.
+export function instructionParts(text: string): [string, number][] {
+  const starts = [...text.matchAll(/^## /gm)].map((m) => m.index)
+  return starts.map((a, i) => {
+    const end = starts[i + 1] ?? text.length
+    const nl = text.indexOf('\n', a)
+    return [text.slice(a + 3, nl < 0 || nl > end ? end : nl).trim(), end - a]
+  })
+}
+
+// Characters of instructions per server. A part that is not a server belongs to the server before it.
+// ponytail: a server with instructions and no tools is counted into the server listed before it; the servers seen by mcp.connect (pull request 2) can replace the breakdown's names.
+export function instructionChars(parts: [string, number][], servers: string[]): Record<string, number> {
+  const out: Record<string, number> = {}
+  let last: string | undefined
+  for (const [name, len] of parts) {
+    if (servers.includes(name)) last = name
+    if (last !== undefined) out[last] = (out[last] ?? 0) + len
+  }
+  return out
+}
+
 // The local estimate of what a session loads before any work, from the usage breakdown and the text of
 // each memory file (absent when it could not be read).
 export function snapshotOf(b: Breakdown, texts: Map<string, string>, at: number, extra: SnapshotExtra = {}): BaseSnapshot {
   const mcp: BaseSnapshot['mcp'] = {}
   const loaded: Record<string, number> = {}
+  const keyOf: Record<string, string> = {} // /mcp name -> key
   for (const t of b.mcpTools ?? []) {
     const key = WIRE.exec(t.name)?.[1] ?? t.serverName
+    keyOf[t.serverName] = key
     if (key === 'longhaul') continue
     const s = (mcp[key] ??= { tools: 0, tokens: 0, ...(t.serverName !== key ? { label: t.serverName } : {}) })
     s.tools++
@@ -76,6 +101,8 @@ export function snapshotOf(b: Breakdown, texts: Map<string, string>, at: number,
     s.tokens += t.isLoaded ? t.tokens : Math.ceil(t.name.length / ON_DEMAND_CHARS)
     if (t.isLoaded) loaded[key] = (loaded[key] ?? 0) + 1
   }
+  for (const [name, chars] of Object.entries(instructionChars(extra.instructions ?? [], Object.keys(keyOf))))
+    if (mcp[keyOf[name]]) mcp[keyOf[name]].tokens += Math.round(chars / ON_DEMAND_CHARS)
   for (const [k, s] of Object.entries(mcp)) if ((loaded[k] ?? 0) < s.tools) s.loaded = loaded[k] ?? 0
   const memory: BaseSnapshot['memory'] = []
   const scanned: { path: string; text: string }[] = []
