@@ -2,6 +2,7 @@ import type { SessionUsage } from 'claude-code'
 import type { SessionRecord } from './ledger'
 import { localDate } from './budget'
 import { START_CAP } from './session'
+import { nameKey } from './mcp'
 
 const DAY = 86_400_000
 const MIN_LINE = 40 // characters, after trimming and collapsing whitespace
@@ -66,7 +67,7 @@ type Breakdown = NonNullable<NonNullable<SessionUsage['context']>['breakdown']>
 // A run of characters that are not letters or digits counts as one `_`: a heading spells the server as
 // /mcp does (`claude.ai Docs`), a tool's name spells it `claude_ai_Docs`, and both give the same key.
 export function headingKey(s: string): number {
-  const t = s.replace(/[^A-Za-z0-9]+/g, '_')
+  const t = nameKey(s)
   let h = 0x811c9dc5
   for (let i = 0; i < t.length; i++) h = Math.imul(h ^ t.charCodeAt(i), 0x01000193)
   return h >>> 0
