@@ -1,5 +1,6 @@
 import { test, expect } from 'claude-code/testing'
-import { findDuplicates, healthAdvice, renderHealth, type BaseSnapshot } from './health'
+import { findDuplicates, healthAdvice, renderHealth, snapshotOf, unusedOf, type BaseSnapshot } from './health'
+import { START_CAP } from './session'
 import { newRecord } from './ledger'
 
 const DAY = 86_400_000
@@ -439,4 +440,32 @@ test('11: a Managed memory file gets no shorten advice; a plugin server is turne
   expect(text).toContain('/plugin')
   expect(text).not.toContain('(/mcp)')
   expect(text).not.toContain('MANAGED.md')
+})
+
+// ---- on-demand servers ----
+
+const lazyTools = [
+  { name: 'mcp__lazy__aaaa', serverName: 'lazy', tokens: 900, isLoaded: false }, // 15 characters
+  { name: 'mcp__lazy__bbbbb', serverName: 'lazy', tokens: 700, isLoaded: false }, // 16 characters
+  { name: 'mcp__mixed__a', serverName: 'mixed', tokens: 4000, isLoaded: true },
+  { name: 'mcp__mixed__bb', serverName: 'mixed', tokens: 3000, isLoaded: false }, // 14 characters
+  { name: 'mcp__github__a', serverName: 'github', tokens: 11_000, isLoaded: true },
+  { name: 'mcp__longhaul__review', serverName: 'longhaul', tokens: 900, isLoaded: false },
+]
+
+test('snapshotOf counts an on-demand tool by its name and keeps how many are loaded', async () => {
+  const s = snapshotOf(bd({ mcpTools: lazyTools }) as never, new Map(), 1)
+  expect(s.mcp.lazy).toEqual({ tools: 2, tokens: 16, loaded: 0 }) // ceil(15 / 2) + ceil(16 / 2)
+  expect(s.mcp.mixed).toEqual({ tools: 2, tokens: 4007, loaded: 1 }) // 4000 + ceil(14 / 2)
+  expect(s.mcp.github).toEqual({ tools: 1, tokens: 11_000 }) // every tool loaded: no `loaded` key
+  expect(s.mcp.longhaul).toBeUndefined()
+  expect(unusedOf(s, { github: 1 }).map(([k]) => k).sort()).toEqual(['lazy', 'mixed'])
+})
+
+test('snapshotOf keeps the measured start only when it is a clean measure', async () => {
+  const b = bd() as never
+  expect(snapshotOf(b, new Map(), 1).measured).toBeUndefined()
+  expect(snapshotOf(b, new Map(), 1, { startCtx: 0 }).measured).toBeUndefined()
+  expect(snapshotOf(b, new Map(), 1, { startCtx: 68_400 }).measured).toBe(68_400)
+  expect(snapshotOf(b, new Map(), 1, { startCtx: START_CAP }).measured).toBeUndefined()
 })

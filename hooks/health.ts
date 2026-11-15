@@ -1,6 +1,7 @@
 import type { SessionUsage } from 'claude-code'
 import type { SessionRecord } from './ledger'
 import { localDate } from './budget'
+import { START_CAP } from './session'
 
 const DAY = 86_400_000
 const MIN_LINE = 40 // characters, after trimming and collapsing whitespace
@@ -12,12 +13,18 @@ export const NOTICE_TOTAL = 60_000
 const MIN_HISTORY = 3 * DAY // the mod's records must reach back this far before a server counts as unused
 const WIRE = /^mcp__(.+?)__/ // same key as the call counts in register.tsx
 export const NOTICE_EVERY = 7 * DAY
+// Characters per token for tool names and server instructions; measured 2.1 on 2026-11-14 (12,078 characters, 5,749 tokens).
+export const ON_DEMAND_CHARS = 2
+
+export type McpEntry = { tools: number; tokens: number; label?: string; loaded?: number } // loaded: tools whose schema is loaded; absent means all
+export type SnapshotExtra = { startCtx?: number; instructions?: [string, number][] }
 
 export type BaseSnapshot = {
   at: number
   total: number
   afterFirstReply?: true // no Messages row to subtract: the total includes the first turn
-  mcp: Record<string, { tools: number; tokens: number; label?: string }> // keyed by wire name; label is what /mcp lists
+  measured?: number // the first request, as measured; absent when there was no clean measure
+  mcp: Record<string, McpEntry> // keyed by wire name; label is what /mcp lists
   memory: { path: string; tokens: number; lines?: number; type?: string }[]
   skills: { count: number; tokens: number }
   duplicate: { lines: number; tokens: number; files: string[] }
@@ -57,15 +64,19 @@ type Breakdown = NonNullable<NonNullable<SessionUsage['context']>['breakdown']>
 
 // The local estimate of what a session loads before any work, from the usage breakdown and the text of
 // each memory file (absent when it could not be read).
-export function snapshotOf(b: Breakdown, texts: Map<string, string>, at: number): BaseSnapshot {
+export function snapshotOf(b: Breakdown, texts: Map<string, string>, at: number, extra: SnapshotExtra = {}): BaseSnapshot {
   const mcp: BaseSnapshot['mcp'] = {}
+  const loaded: Record<string, number> = {}
   for (const t of b.mcpTools ?? []) {
     const key = WIRE.exec(t.name)?.[1] ?? t.serverName
-    if (!t.isLoaded || key === 'longhaul') continue
+    if (key === 'longhaul') continue
     const s = (mcp[key] ??= { tools: 0, tokens: 0, ...(t.serverName !== key ? { label: t.serverName } : {}) })
     s.tools++
-    s.tokens += t.tokens
+    // an on-demand tool costs only its name until it loads
+    s.tokens += t.isLoaded ? t.tokens : Math.ceil(t.name.length / ON_DEMAND_CHARS)
+    if (t.isLoaded) loaded[key] = (loaded[key] ?? 0) + 1
   }
+  for (const [k, s] of Object.entries(mcp)) if ((loaded[k] ?? 0) < s.tools) s.loaded = loaded[k] ?? 0
   const memory: BaseSnapshot['memory'] = []
   const scanned: { path: string; text: string }[] = []
   for (const m of b.memoryFiles ?? []) {
@@ -83,6 +94,7 @@ export function snapshotOf(b: Breakdown, texts: Map<string, string>, at: number)
   const messages = (b.categories ?? []).find((c) => c.name === 'Messages')?.tokens
   return {
     at,
+    ...(extra.startCtx !== undefined && extra.startCtx > 0 && extra.startCtx < START_CAP ? { measured: extra.startCtx } : {}),
     total: messages === undefined ? b.totalTokens : Math.max(0, b.totalTokens - messages),
     ...(messages === undefined ? { afterFirstReply: true as const } : {}),
     mcp,
@@ -92,7 +104,7 @@ export function snapshotOf(b: Breakdown, texts: Map<string, string>, at: number)
   }
 }
 
-export const unusedOf = (snap: BaseSnapshot, calls: Record<string, number>, mature = true): [string, { tools: number; tokens: number; label?: string }][] =>
+export const unusedOf = (snap: BaseSnapshot, calls: Record<string, number>, mature = true): [string, McpEntry][] =>
   mature ? Object.entries(snap.mcp).filter(([s]) => !(calls[s] > 0)) : []
 
 const nameOf = (key: string, label?: string): string => (label ? `${key} (${label})` : key)
