@@ -2,8 +2,15 @@ import { test, expect } from 'claude-code/testing'
 import { measuredShares, ELSEWHERE, buildReport, renderText } from './report'
 import { newRecord, type SessionRecord, type Decision } from './ledger'
 import { PRICES_AS_OF } from './prices'
+import type { ReportData } from './report'
 
 const DAY = 86_400_000
+const sug = [
+  { key: 'blender', name: 'blender', tools: 10, why: 'was not called in the last 21 days', command: '/longhaul mcp blender off' },
+  { key: 'claude_ai_Higgsfield', name: 'claude.ai Higgsfield', tools: 170, why: 'was called only in media in the last 21 days', command: '/longhaul mcp claude.ai Higgsfield only media' },
+  { key: 'kicad', name: 'kicad', why: 'was not called in the last 21 days', command: '/longhaul mcp kicad off' },
+]
+const fix = (d: ReportData) => d.sections.find((s) => s.title === 'Fix first')!.lines.map((l) => l.text)
 const resets = new Date(2026, 9, 23, 4, 0).getTime()
 const mk = (id: string, o: Partial<SessionRecord> = {}): SessionRecord => ({
   ...newRecord(id, 'proj', new Date(2026, 9, 19, 14, 5).getTime()),
@@ -53,7 +60,13 @@ test('buildReport shares fold input into new context', async () => {
   expect(d.where).toEqual({ read: 63, newContext: 21, output: 16 })
 })
 
-const text = renderText(buildReport([big], now, ['slack (4 tools)'], { guardMode: 'off', softLimit: 150_000 }))
+const text = renderText(buildReport([big], now, sug.slice(0, 1), { guardMode: 'off', softLimit: 150_000 }))
+
+test('Fix first prints the command for each suggestion', async () => {
+  expect(fix(buildReport([mk('f')], now, sug.slice(0, 1)))).toEqual(['MCP server blender (10 tools) was not called in the last 21 days: /longhaul mcp blender off'])
+  expect(fix(buildReport([mk('f')], now, sug.slice(2)))).toEqual(['MCP server kicad was not called in the last 21 days: /longhaul mcp kicad off'])
+  expect(fix(buildReport([], now, sug))).toEqual(['Nothing to fix this week.'])
+})
 
 test('renderText headings in order, estimates marked, footer', async () => {
   const heads = ['This week', 'Where it went', 'Why', 'Biggest sessions', 'Sonnet handoffs', 'Compactions', 'Fix first']
@@ -77,8 +90,8 @@ test('fix first ranks what applies', async () => {
   const fix = text.slice(text.indexOf('Fix first'))
   expect(fix).toContain('Turn the context guard on')
   expect(fix).toContain('en.search was redone in 2 of 3')
-  expect(fix).toContain('slack (4 tools)')
-  expect(fix.indexOf('guard')).toBeLessThan(fix.indexOf('slack'))
+  expect(fix).toContain('/longhaul mcp blender off')
+  expect(fix.indexOf('guard')).toBeLessThan(fix.indexOf('blender'))
   const none = renderText(buildReport([big], now, [], { guardMode: 'auto', softLimit: 150_000 }))
   expect(none).toContain('en.search')
   const clean = renderText(buildReport([mk('c')], now, []))
@@ -104,7 +117,6 @@ function stub(on: any) {
   on('store.delete', async (_$: any, e: any) => (store.delete(e.key), { value: undefined }))
   on('clock.now', async () => ({ value: Date.now() }))
   on('ui.log', async () => ({ value: undefined }))
-  on('tool.list', async () => ({ value: [{ name: 'mcp__github__a', description: '', mcp: true }, { name: 'mcp__slack__b', description: '', mcp: true }] }))
   on('command.register', async () => ({ value: undefined }))
 }
 
@@ -113,8 +125,6 @@ test('/longhaul prints the text report when it gets no argument', async ($, on) 
   for (const args of ['', '   ']) {
     const r = await $.command.run({ command: 'longhaul', args })
     expect(r.text).toContain('Biggest sessions')
-    expect(r.text).toContain('slack (1 tool)')
-    expect(r.text).not.toContain('github (')
     expect(r.text).not.toContain('report.html')
   }
 })
@@ -157,9 +167,9 @@ test('measured figures use only meter readings inside the week', async () => {
   expect(out).toContain('Used 36% of the weekly limit')
 })
 
-test('a fresh install, with no records, does not suggest disabling MCP servers', async () => {
-  const out = renderText(buildReport([], now, ['slack (4 tools)']))
-  expect(out).not.toContain('was not called this week')
+test('a fresh install, with no records, does not suggest MCP commands', async () => {
+  const out = renderText(buildReport([], now, sug))
+  expect(out).not.toContain('/longhaul mcp')
 })
 
 test('Compactions section: counts by reason, medians, hard-limit sessions; empty message', async () => {

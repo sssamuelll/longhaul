@@ -470,3 +470,36 @@ test('here means the folder the session is in now', ON, async ($, on) => {
   await run($, 'mcp h14 here')
   expect(rules(s)).toEqual({ h14: ['elsewhere', '/w/h14a', '/w/h14b'] })
 })
+
+test('health and the report print the command to type', async ($, on) => {
+  const old = newRecord('h15-old', 'h15', now - 10 * DAY, '/w/h15')
+  old.base = { at: now - 10 * DAY, total: 0, mcp: { h15: { tools: 1, tokens: 100 } }, memory: [], skills: { count: 0, tokens: 0 }, duplicate: { lines: 0, tokens: 0, files: [] } }
+  stub(on, { id: 'h15', root: '/w/h15', seeds: [old], breakdown: tool('h15') })
+  await start($)
+  await turn($)
+  expect(((await run($, 'health')) as any).text).toContain('/longhaul mcp h15 off')
+  expect(((await run($, '')) as any).text).toContain('MCP server h15 (1 tool) was not called in the last 10 days: /longhaul mcp h15 off')
+})
+
+test('health says when saved rules are not applied', async ($, on) => {
+  stub(on, { id: 'h17', root: '/w/h17', breakdown: tool('h17'), store: new Map([['mcp:rules', { h17: [] }]]) })
+  await start($)
+  await turn($)
+  const r: any = await run($, 'health')
+  expect(r.text).toContain('Advice\n- Rules are saved but not applied. To apply them, set mcp_mode to on in /plugin and run /reload-plugins.')
+  expect(r.text).not.toContain('Your sessions start light.')
+})
+
+test('health has no such line when rules are applied', ON, async ($, on) => {
+  stub(on, { id: 'h18', root: '/w/h18', breakdown: tool('h18'), store: new Map([['mcp:rules', { h18: [] }]]) })
+  await start($)
+  await turn($)
+  expect(((await run($, 'health')) as any).text).not.toContain('Rules are saved but not applied')
+})
+
+test('health has no such line when no rule is stored', async ($, on) => {
+  stub(on, { id: 'h19', root: '/w/h19', breakdown: tool('h19'), store: new Map([['mcp:rules', {}]]) })
+  await start($)
+  await turn($)
+  expect(((await run($, 'health')) as any).text).not.toContain('Rules are saved but not applied')
+})

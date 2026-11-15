@@ -4,6 +4,7 @@ import { PRICES_AS_OF, type Bucket } from './prices'
 import { parseReset, SEP } from './budget'
 import { REASON_LABEL } from './compact'
 import type { CompactReason } from './ledger'
+import type { Suggestion } from './mcp'
 
 const DAY = 86_400_000
 const WEEKDAY = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const
@@ -92,11 +93,11 @@ export function windowOf(records: SessionRecord[], now: number): { week: Session
   return { week, resetsAt, start, end }
 }
 
-// `unusedServers` are preformatted ("name (N tools)"); `cfg` is only needed for the guard suggestion.
+// `suggestions` come from /longhaul mcp; `cfg` is only needed for the guard suggestion.
 export function buildReport(
   records: SessionRecord[],
   now: number,
-  unusedServers: string[],
+  suggestions: Suggestion[],
   cfg?: Pick<Config, 'guardMode' | 'softLimit'>,
 ): ReportData {
   const { week, resetsAt, start, end } = windowOf(records, now)
@@ -223,7 +224,7 @@ export function buildReport(
       fixes.push(`Handoff rule ${id} was redone in ${s.redone} of ${s.decided} handoffs: narrow it or keep that work on the main model${EST}`)
     }
   }
-  if (week.length) for (const s of unusedServers) fixes.push(`MCP server ${s} was not called this week: disable it if you do not need it.`)
+  if (week.length) for (const s of suggestions) fixes.push(`MCP server ${s.name}${s.tools === undefined ? '' : ` (${plural(s.tools, 'tool')})`} ${s.why}: ${s.command}`)
   sections.push({
     title: 'Fix first',
     lines: fixes.length ? fixes.map((text) => ({ kind: 'bullet' as const, text })) : [{ kind: 'text', text: 'Nothing to fix this week.' }],
@@ -245,15 +246,4 @@ export function renderText(d: ReportData): string {
   }
   out.push(d.footer)
   return out.join('\n')
-}
-
-// Servers whose tools exist but were never called this week, as "name (N tools)".
-export function unusedServers(toolNames: string[], week: SessionRecord[]): string[] {
-  const tools = new Map<string, number>()
-  for (const name of toolNames) {
-    const m = /^mcp__(.+?)__/.exec(name)
-    if (m && m[1] !== 'longhaul') tools.set(m[1], (tools.get(m[1]) ?? 0) + 1)
-  }
-  const called = new Set(week.flatMap((r) => Object.entries(r.mcpCalls).filter(([, n]) => n > 0).map(([s]) => s)))
-  return [...tools].filter(([s]) => !called.has(s)).map(([s, n]) => `${s} (${plural(n, 'tool')})`)
 }

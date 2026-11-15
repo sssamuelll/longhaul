@@ -8,11 +8,11 @@ import { emptyFacts, observeTool, isTaskDone, isNewTask, guardDecision, type Tur
 import { addStep, capRecord, lastActivity, newRecord, KEEP_DAYS, parse, projectOf, totalCost, MAX_RATE, SESSION_PREFIX, type CompactReason, type SessionRecord } from './ledger'
 import { SEP, NOTICE_MCP, localDate, parseReset, pace } from './budget'
 import { eventText, meterSegs } from './band'
-import { buildReport, renderText, unusedServers, windowOf, type ReportData } from './report'
+import { buildReport, renderText, windowOf, type ReportData } from './report'
 import { NOTICE_TOTAL, NOTICE_EVERY, DUP_TOKENS, instructionParts, snapshotOf, unusedOf, addCalls, historyOf, healthAdvice, renderHealth, type BaseSnapshot } from './health'
 import { DEFAULT_RULES, parseRules, takeRulesWarn, type Rule } from './rules'
 import type { History } from './health'
-import { parseCommand, HELP, normPath, RULES_KEY, readRuleSet, findRule, isProtected, holds, holdMessage, checkPattern, noteSeen, seenServers, knownServers, foldersOf, suggestionsOf, renderList, resolveServer, planVerb, connectLine, NOT_SAVED, NOT_READ, type Command, type Here, type RuleSet, type Known, type Typed } from './mcp'
+import { parseCommand, HELP, normPath, RULES_KEY, readRuleSet, findRule, isProtected, holds, holdMessage, checkPattern, noteSeen, seenServers, knownServers, foldersOf, suggestionsOf, MODE_OFF, renderList, resolveServer, planVerb, connectLine, NOT_SAVED, NOT_READ, type Command, type Here, type RuleSet, type Known, type Typed } from './mcp'
 import { classify } from './classifier'
 import { HANDOFF, ASK_HANDOFF, SUBAGENT_NOTE, REVIEW_TOOL, OUTCOMES, isExpensiveMain, noteEdit, applyReview, ageDecisions, getRules, setRules, clearMainEdited, resetHandoff } from './handoff'
 
@@ -394,7 +394,7 @@ async function healthAfterFirstTurn($: EngineInterface, cfg: Config, ctx: TurnCt
 }
 
 // This session's snapshot, else the latest of the same project, else the latest overall.
-async function runHealth($: EngineInterface): Promise<{ text: string }> {
+async function runHealth($: EngineInterface, cfg: Config): Promise<{ text: string }> {
   const now = await $.clock.now()
   const rec = await current($)
   const stored = await weekRecords($, now)
@@ -404,7 +404,10 @@ async function runHealth($: EngineInterface): Promise<{ text: string }> {
   if (!pick?.base) return { text: "No snapshot yet: it's taken after the first reply of a session." }
   const calls = addCalls(week)
   const history = historyOf(week, now)
-  return { text: `Snapshot from project ${pick.project}.\n\n${renderHealth(pick.base, healthAdvice(pick.base, calls, history), calls, history)}` }
+  const g = await gather($)
+  const suggestions = g.rules ? suggestionsOf(g.known, foldersOf(g.records), g.history, g.now) : []
+  const note = cfg.mcpMode === 'off' && g.rules && Object.keys(g.rules).length ? MODE_OFF : undefined
+  return { text: `Snapshot from project ${pick.project}.\n\n${renderHealth(pick.base, healthAdvice(pick.base, suggestions, note), calls, history)}` }
 }
 
 // ---- the report ----
@@ -412,14 +415,9 @@ async function runHealth($: EngineInterface): Promise<{ text: string }> {
 async function reportFor($: EngineInterface, cfg: Config): Promise<ReportData> {
   const now = await $.clock.now()
   const records = await listRecords($, now - KEEP_DAYS * DAY)
-  let unused: string[] = []
-  try {
-    const tools = await $.tool.list()
-    unused = unusedServers(tools.map((t) => t.name), windowOf(records, now).week)
-  } catch (err) {
-    fail($, 'list tools for report', err)
-  }
-  return buildReport(records, now, unused, cfg)
+  const g = await gather($) // ponytail: lists the records a second time; the report's own sessions must not include the current one
+  const suggestions = g.rules ? suggestionsOf(g.known, foldersOf(g.records), g.history, g.now) : []
+  return buildReport(records, now, suggestions, cfg)
 }
 
 async function runReport($: EngineInterface, cfg: Config): Promise<{ text: string }> {
@@ -891,7 +889,7 @@ export const register: Register = (on, options) => {
     try {
       const cmd = parseCommand(e.args ?? '')
       switch (cmd.kind) {
-        case 'health': return await runHealth($)
+        case 'health': return await runHealth($, cfg)
         case 'help': return { text: `${cmd.why}\n\n${HELP}` }
         case 'list':
         case 'verb': return await runMcp($, cfg, cmd)
