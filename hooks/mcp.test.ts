@@ -1,5 +1,5 @@
 import { test, expect } from 'claude-code/testing'
-import { parseCommand, knownServers, suggestionsOf, renderList, MODE_OFF, type Known, nameKey, normPath, checkPattern, matchesFolder, readRuleSet, findRule, isProtected, holds, holdMessage } from './mcp'
+import { parseCommand, knownServers, suggestionsOf, renderList, MODE_OFF, type Known, type Here, planVerb, resolveServer, connectLine, STAYS_ON, nameKey, normPath, checkPattern, matchesFolder, readRuleSet, findRule, isProtected, holds, holdMessage } from './mcp'
 import { headingKey } from './health'
 import { newRecord, projectOf } from './ledger'
 import type { BaseSnapshot } from './health'
@@ -203,6 +203,60 @@ test('the list says what it does not know', () => {
   expect(renderList([busy], { ...o, history: young })).toContain('  called since 2026-11-13: a (6), b (5)')
   expect(renderList([ghost], { ...o, history: young })).toContain('  not seen in the last 21 days')
   expect(renderList([], o)).toBe('MCP servers\n\nNo MCP servers known yet.')
+})
+
+const kn = (o: Partial<Known> = {}): Known => ({ key: 'kicad', name: 'kicad', isOn: false, isSeen: true, calls: [], idleIn: [], ...o })
+const vina: Here = { root: 'C:\\Users\\simon\\Desktop\\projects\\vina', real: 'D:\\Desktop\\projects\\vina' }
+
+test('only replaces the rule and connects when this folder matches', () => {
+  expect(planVerb(kn(), 'only', [{ pattern: 'sam17', isPath: false }], {}, vina, true)).toEqual({ rules: { kicad: ['sam17'] }, connect: false, lines: ['kicad loads only in sam17.'] })
+  expect(planVerb(kn({ isOn: true }), 'only', [{ pattern: 'sam17', isPath: false }], {}, vina, true).lines).toEqual(['kicad loads only in sam17.', STAYS_ON])
+  expect(planVerb(kn(), 'only', [{ pattern: 'vina', isPath: false }, { pattern: 'D:/gone', isPath: true, isMissing: true }], { kicad: ['x'] }, vina, true)).toEqual({
+    rules: { kicad: ['vina', 'D:/gone'] },
+    connect: true,
+    lines: ['kicad loads only in vina, D:/gone.', 'D:/gone was not found, so it was saved as typed.'],
+  })
+})
+
+test('here adds this folder, by its real path, unless a pattern already matches', () => {
+  expect(planVerb(kn(), 'here', [], {}, vina, true)).toEqual({ connect: false, lines: ['kicad has no rule and loads everywhere.'] })
+  expect(planVerb(kn({ rule: ['sam17'] }), 'here', [], { kicad: ['sam17'] }, vina, true)).toEqual({ rules: { kicad: ['sam17', 'D:/Desktop/projects/vina'] }, connect: true, lines: ['kicad loads only in sam17, D:/Desktop/projects/vina.'] })
+  expect(planVerb(kn({ rule: ['sam17'] }), 'here', [], { kicad: ['sam17'] }, { root: 'D:\\w\\x\\' }, true).rules).toEqual({ kicad: ['sam17', 'D:/w/x'] })
+  expect(planVerb(kn({ rule: ['vina'] }), 'here', [], { kicad: ['vina'] }, vina, true)).toEqual({ connect: true, lines: ['kicad loads only in vina.'] })
+  expect(planVerb(kn({ rule: [] }), 'here', [], { kicad: [] }, vina, true).rules).toEqual({ kicad: ['D:/Desktop/projects/vina'] }) // off everywhere, then here
+})
+
+test('everywhere removes the rule, off empties it', () => {
+  expect(planVerb(kn({ rule: [] }), 'everywhere', [], { kicad: [], blender: ['x'] }, vina, true)).toEqual({ rules: { blender: ['x'] }, connect: true, lines: ['kicad has no rule and loads everywhere.'] })
+  expect(planVerb(kn({ isOn: true }), 'off', [], { blender: ['x'] }, vina, true)).toEqual({ rules: { blender: ['x'], kicad: [] }, connect: false, lines: ['kicad is off in every folder.', STAYS_ON] })
+  expect(planVerb(kn(), 'off', [], {}, vina, true).lines).toEqual(['kicad is off in every folder.'])
+  expect(planVerb(kn(), 'everywhere', [], { blender: ['x'] }, vina, true)).toEqual({ connect: true, lines: ['kicad has no rule and loads everywhere.'] })
+})
+
+test('with mcp_mode off a rule is saved and nothing is connected', () => {
+  expect(planVerb(kn({ isOn: true }), 'off', [], {}, vina, false)).toEqual({ rules: { kicad: [] }, connect: false, lines: ['kicad is off in every folder.', MODE_OFF] })
+  expect(planVerb(kn({ rule: ['sam17'] }), 'here', [], { kicad: ['sam17'] }, vina, false)).toMatchObject({ connect: false })
+  expect(planVerb(kn({ rule: [] }), 'everywhere', [], { kicad: [] }, vina, false)).toMatchObject({ connect: false, lines: ['kicad has no rule and loads everywhere.', MODE_OFF] })
+})
+
+test('a rule moves to the name the hook gave', () => {
+  const h = kn({ key: 'claude_ai_Higgsfield', name: 'claude.ai Higgsfield', rule: ['media'] })
+  expect(planVerb(h, 'off', [], { claude_ai_Higgsfield: ['media'] }, vina, true).rules).toEqual({ 'claude.ai Higgsfield': [] })
+})
+
+test('a server is found whatever its case or spelling, or refused with the known ones', () => {
+  const known = [kn(), kn({ key: 'claude_ai_Higgsfield', name: 'claude.ai Higgsfield' }), kn({ key: 'blender', name: 'blender' })]
+  expect(resolveServer(known, 'KICAD')).toBe(known[0])
+  expect(resolveServer(known, 'claude_ai_higgsfield')).toBe(known[1])
+  expect(resolveServer(known, 'kicadd')).toEqual({ error: 'No MCP server is called "kicadd". Known: blender, claude.ai Higgsfield, kicad.' })
+  expect(resolveServer([], 'kicad')).toEqual({ error: 'No MCP server is called "kicad". None is known yet.' })
+  expect(resolveServer(known, 'Longhaul')).toEqual({ error: "longhaul's own server is never held." })
+})
+
+test('the connection is reported as the engine answered', () => {
+  expect(connectLine({ isConnected: true })).toBe('It is on in this session.')
+  expect(connectLine({ isConnected: false, message: 'needs sign-in.' })).toBe('It did not connect: needs sign-in.')
+  expect(connectLine(undefined)).toBe('It did not connect.')
 })
 
 type Opt = { id: string; breakdown?: unknown; reject?: boolean; files?: Record<string, string>; store?: Map<string, unknown>; cwd?: string; history?: boolean; seeds?: object[]; ctx?: number; root?: string | (() => string); real?: Record<string, string> }

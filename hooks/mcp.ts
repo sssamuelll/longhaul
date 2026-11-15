@@ -215,6 +215,46 @@ export function suggestionsOf(known: Known[], folders: string[], history: Histor
 
 export const MODE_OFF = 'Rules are saved but not applied. To apply them, set mcp_mode to on in /plugin and run /reload-plugins.'
 
+export type Typed = { pattern: string; isPath: boolean; isMissing?: true } // isMissing: a full path whose folder was not found
+export type VerbPlan = { rules?: RuleSet; connect: boolean; lines: string[] } // rules absent: nothing to save
+
+export const NOT_SAVED = 'The rule could not be saved, so nothing changed. Try the command again.'
+export const NOT_READ = 'The rules could not be read, so nothing changed. Try the command again.'
+export const STAYS_ON = 'It stays on in this session and is held from the next one. /mcp turns it off now.'
+
+export function resolveServer(known: Known[], typed: string): Known | { error: string } {
+  if (isProtected(typed)) return { error: "longhaul's own server is never held." }
+  const k = nameKey(typed).toLowerCase()
+  const found = known.find((x) => nameKey(x.name).toLowerCase() === k)
+  if (found) return found
+  const names = known.map((x) => x.name).sort((a, b) => a.localeCompare(b))
+  return { error: `No MCP server is called "${typed}". ${names.length ? `Known: ${names.join(', ')}.` : 'None is known yet.'}` }
+}
+
+export function planVerb(k: Known, verb: Verb, typed: Typed[], rules: RuleSet, here: Here, isOn: boolean): VerbPlan {
+  const cur = findRule(rules, k.name)?.[1]
+  const folders = [here.root, ...(here.real ? [here.real] : [])]
+  const next =
+    verb === 'only' ? typed.map((t) => t.pattern)
+    : verb === 'off' ? []
+    : verb === 'everywhere' ? undefined
+    : cur && (matchesFolder(cur, folders) ? cur : [...cur, normPath(here.real ?? here.root)])
+  const isKept = next === cur
+  const lines = [!next ? `${k.name} has no rule and loads everywhere.` : next.length ? `${k.name} loads only in ${next.join(', ')}.` : `${k.name} is off in every folder.`]
+  for (const t of typed) if (t.isMissing) lines.push(`${t.pattern} was not found, so it was saved as typed.`)
+  const isHere = !next || matchesFolder(next, folders)
+  if (isOn && k.isOn && !isHere) lines.push(STAYS_ON)
+  if (!isOn) lines.push(MODE_OFF)
+  const connect = isOn && (verb === 'here' ? !!cur : verb === 'everywhere' || (verb === 'only' && isHere))
+  if (isKept) return { connect, lines }
+  const out = Object.fromEntries(Object.entries(rules).filter(([key]) => nameKey(key) !== nameKey(k.name)))
+  if (next) out[k.name] = next
+  return { rules: out, connect, lines }
+}
+
+export const connectLine = (r: { isConnected?: boolean; message?: string } | undefined): string =>
+  r?.isConnected ? 'It is on in this session.' : r?.message ? `It did not connect: ${r.message}` : 'It did not connect.'
+
 export function renderList(known: Known[], o: { suggestions: Suggestion[]; folders: string[]; here: Here; isOn: boolean; history: History; now: number }): string {
   const lines = o.isOn ? [] : [MODE_OFF, '']
   lines.push('MCP servers', '')
