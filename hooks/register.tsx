@@ -678,10 +678,11 @@ export const register: Register = (on, options) => {
     }
   })
 
-  // Observes only: keeps each server's instruction length, never the text, and passes the event on as it came.
+  // Observes only: keeps a number per heading and the length of each part, never the text, and passes the event on as it came.
   on('prompt.attachment', { type: 'mcp_instructions_delta' }, async ($, e, next) => {
+    if (e.agentId) return next(e)
     try {
-      addInstructionParts(instructionParts((e as { text: string }).text))
+      addInstructionParts(instructionParts(e.text))
     } catch (err) {
       fail($, 'server instructions', err)
     }

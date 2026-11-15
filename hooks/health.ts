@@ -17,7 +17,7 @@ export const NOTICE_EVERY = 7 * DAY
 export const ON_DEMAND_CHARS = 2
 
 export type McpEntry = { tools: number; tokens: number; label?: string; loaded?: number } // loaded: tools whose schema is loaded; absent means all
-export type SnapshotExtra = { startCtx?: number; instructions?: [string, number][] }
+export type SnapshotExtra = { startCtx?: number; instructions?: [number, number][][] }
 
 export type BaseSnapshot = {
   at: number
@@ -62,24 +62,32 @@ export function findDuplicates(files: { path: string; text: string }[]): BaseSna
 
 type Breakdown = NonNullable<NonNullable<SessionUsage['context']>['breakdown']>
 
-// The parts of the MCP Server Instructions text: one per line starting `## `, named as /mcp lists the server,
-// with its length in characters. Only lengths are kept.
-export function instructionParts(text: string): [string, number][] {
+// Stands for a heading (32-bit FNV-1a of its UTF-16 code units) so that no instruction text is held.
+export function headingKey(s: string): number {
+  let h = 0x811c9dc5
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 0x01000193)
+  return h >>> 0
+}
+
+// The parts of the MCP Server Instructions text: one per line starting `## `, as a key of the heading
+// (the server's name as /mcp lists it) and the part's length in characters. Only numbers are kept.
+export function instructionParts(text: string): [number, number][] {
   const starts = [...text.matchAll(/^## /gm)].map((m) => m.index)
   return starts.map((a, i) => {
     const end = starts[i + 1] ?? text.length
     const nl = text.indexOf('\n', a)
-    return [text.slice(a + 3, nl < 0 || nl > end ? end : nl).trim(), end - a]
+    return [headingKey(text.slice(a + 3, nl < 0 || nl > end ? end : nl).trim()), end - a]
   })
 }
 
 // Characters of instructions per server. A part that is not a server belongs to the server before it.
 // ponytail: a server with instructions and no tools is counted into the server listed before it; the servers seen by mcp.connect (pull request 2) can replace the breakdown's names.
-export function instructionChars(parts: [string, number][], servers: string[]): Record<string, number> {
+export function instructionChars(parts: [number, number][], servers: string[]): Record<string, number> {
   const out: Record<string, number> = {}
   let last: string | undefined
-  for (const [name, len] of parts) {
-    if (servers.includes(name)) last = name
+  for (const [key, len] of parts) {
+    const name = servers.find((s) => headingKey(s) === key)
+    if (name !== undefined) last = name
     if (last !== undefined) out[last] = (out[last] ?? 0) + len
   }
   return out
@@ -101,7 +109,11 @@ export function snapshotOf(b: Breakdown, texts: Map<string, string>, at: number,
     s.tokens += t.isLoaded ? t.tokens : Math.ceil(t.name.length / ON_DEMAND_CHARS)
     if (t.isLoaded) loaded[key] = (loaded[key] ?? 0) + 1
   }
-  for (const [name, chars] of Object.entries(instructionChars(extra.instructions ?? [], Object.keys(keyOf))))
+  // a server announced again takes its newest total; a heading never folds into a server of another announcement
+  const names = Object.keys(keyOf)
+  const total: Record<string, number> = {}
+  for (const list of extra.instructions ?? []) Object.assign(total, instructionChars(list, names))
+  for (const [name, chars] of Object.entries(total))
     if (mcp[keyOf[name]]) mcp[keyOf[name]].tokens += Math.round(chars / ON_DEMAND_CHARS)
   for (const [k, s] of Object.entries(mcp)) if ((loaded[k] ?? 0) < s.tools) s.loaded = loaded[k] ?? 0
   const memory: BaseSnapshot['memory'] = []
@@ -162,7 +174,7 @@ export function healthAdvice(snap: BaseSnapshot, calls: Record<string, number>, 
 export function renderHealth(snap: BaseSnapshot, advice: Advice[], calls: Record<string, number> = {}, history?: History): string {
   const items: [number, string][] = []
   for (const [s, v] of Object.entries(snap.mcp))
-    items.push([v.tokens, `${nameOf(s, v.label)} MCP: ${v.loaded === 0 ? `${plural(v.tools, 'tool')} (on demand)` : v.loaded === undefined ? plural(v.tools, 'tool') : `${plural(v.tools, 'tool')} (${v.loaded} loaded)`}, ${n(v.tokens)} tokens ${EST}, ${calls[s] > 0 ? 'used this week' : history && !history.mature ? `no calls recorded since ${localDate(history.since)}` : 'not used this week'}`])
+    items.push([v.tokens, `${nameOf(s, v.label)} MCP: ${plural(v.tools, 'tool')}${v.loaded === 0 ? ' (on demand)' : v.loaded === undefined ? '' : ` (${v.loaded} loaded)`}, ${n(v.tokens)} tokens ${EST}, ${calls[s] > 0 ? 'used this week' : history && !history.mature ? `no calls recorded since ${localDate(history.since)}` : 'not used this week'}`])
   for (const m of snap.memory) items.push([m.tokens, `${m.path}: ${m.lines === undefined ? '' : `${plural(m.lines, 'line')}, `}${n(m.tokens)} tokens ${EST}`])
   if (snap.skills.count) items.push([snap.skills.tokens, `skills: ${snap.skills.count} listed, ${n(snap.skills.tokens)} tokens ${EST}`])
   const d = snap.duplicate

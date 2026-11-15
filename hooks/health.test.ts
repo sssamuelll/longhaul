@@ -1,6 +1,6 @@
 import { test, expect } from 'claude-code/testing'
-import { findDuplicates, healthAdvice, instructionChars, instructionParts, renderHealth, snapshotOf, unusedOf, type BaseSnapshot } from './health'
-import { START_CAP } from './session'
+import { findDuplicates, headingKey, healthAdvice, instructionChars, instructionParts, renderHealth, snapshotOf, unusedOf, type BaseSnapshot } from './health'
+import { START_CAP, getInstructionParts } from './session'
 import { newRecord } from './ledger'
 
 const DAY = 86_400_000
@@ -475,24 +475,24 @@ const part = (name: string, chars: number): string => `## ${name}\n`.padEnd(char
 const INSTR = `# MCP Server Instructions\n\n${part('lazy', 400)}${part('mixed', 100)}${part('longhaul', 76)}`
 
 test('instructionParts gives each server part its length, heading included', async () => {
-  expect(instructionParts(INSTR)).toEqual([['lazy', 400], ['mixed', 100], ['longhaul', 76]])
+  expect(instructionParts(INSTR)).toEqual([[headingKey('lazy'), 400], [headingKey('mixed'), 100], [headingKey('longhaul'), 76]])
   expect(instructionParts('no headings here')).toEqual([])
   expect(instructionParts('')).toEqual([])
 })
 
 test('instructionChars adds a heading that is not a server to the server before it', async () => {
-  const parts: [string, number][] = [['Intro', 30], ['lazy', 400], ['Notes', 50], ['mixed', 100]]
+  const parts: [number, number][] = [[headingKey('Intro'), 30], [headingKey('lazy'), 400], [headingKey('Notes'), 50], [headingKey('mixed'), 100]]
   expect(instructionChars(parts, ['lazy', 'mixed', 'github'])).toEqual({ lazy: 450, mixed: 100 })
 })
 
 test('snapshotOf adds instructions at 2 characters per token, found by the /mcp name', async () => {
-  const s = snapshotOf(bd({ mcpTools: lazyTools }) as never, new Map(), 1, { instructions: instructionParts(INSTR) })
+  const s = snapshotOf(bd({ mcpTools: lazyTools }) as never, new Map(), 1, { instructions: [instructionParts(INSTR)] })
   expect(s.mcp.lazy).toEqual({ tools: 2, tokens: 216, loaded: 0 }) // 16 + 400 / 2
   expect(s.mcp.mixed.tokens).toBe(4057) // 4007 + 100 / 2
   expect(s.mcp.github.tokens).toBe(11_000)
   expect(s.mcp.longhaul).toBeUndefined()
   const docs = [{ name: 'mcp__claude_ai_Docs__read', serverName: 'claude.ai Docs', tokens: 500, isLoaded: true }]
-  const d = snapshotOf(bd({ mcpTools: docs }) as never, new Map(), 1, { instructions: [['claude.ai Docs', 1000]] })
+  const d = snapshotOf(bd({ mcpTools: docs }) as never, new Map(), 1, { instructions: [[[headingKey('claude.ai Docs'), 1000]]] })
   expect(d.mcp.claude_ai_Docs).toEqual({ tools: 1, tokens: 1000, label: 'claude.ai Docs' }) // 500 + 1000 / 2
 })
 
@@ -588,4 +588,62 @@ test('a capped start measure is not saved', { options: { guard_mode: 'off' } }, 
   await step($)
   await done($)
   expect(saved(s.store, 'ms2').base.measured).toBeUndefined()
+})
+
+const announce = (...parts: string[]) => `# MCP Server Instructions
+
+${parts.join('')}`
+const withInstr = (...texts: string[]) => snapshotOf(bd({ mcpTools: lazyTools }) as never, new Map(), 1, { instructions: texts.map(instructionParts) })
+
+test('a heading that two servers share is counted to each', async () => {
+  const s = withInstr(announce(part('lazy', 1000), part('Usage', 200), part('mixed', 1000), part('Usage', 800)))
+  expect(s.mcp.lazy.tokens).toBe(616) // 16 + 1200 / 2
+  expect(s.mcp.mixed.tokens).toBe(4907) // 4007 + 1800 / 2
+})
+
+test('a heading that one server repeats is counted each time', async () => {
+  const s = withInstr(announce(part('lazy', 1000), part('Example', 300), part('Example', 300)))
+  expect(s.mcp.lazy.tokens).toBe(816) // 16 + 1600 / 2
+})
+
+test('a server announced again takes its newest parts, and a loose heading is dropped', async () => {
+  const s = withInstr(
+    announce(part('lazy', 400), part('mixed', 100), part('Usage', 50)),
+    announce(part('mixed', 300), part('Usage', 60)),
+    announce(part('Notes', 500)), // no server before it in its own announcement
+  )
+  expect(s.mcp.lazy.tokens).toBe(216) // 16 + 400 / 2
+  expect(s.mcp.mixed.tokens).toBe(4187) // 4007 + 360 / 2
+})
+
+test('only numbers are held and no heading reaches the store', async ($, on) => {
+  const s = stub(on, { id: 'i5', breakdown: bd({ mcpTools: lazyTools }) })
+  await begin($)
+  await attach($, announce(part('lazy', 400), part('Zebra-Heading', 60), part('mixed', 100)))
+  expect(getInstructionParts().flat(2).every((v) => typeof v === 'number')).toBe(true)
+  await done($)
+  expect(saved(s.store, 'i5').base.mcp.lazy.tokens).toBe(246) // 16 + 460 / 2
+  expect(JSON.stringify([...s.store.values()])).not.toContain('Zebra')
+})
+
+test("a subagent's attachment is passed on and not counted", async ($, on) => {
+  const s = stub(on, { id: 'i6', breakdown: bd({ mcpTools: lazyTools }) })
+  await begin($)
+  await attach($, INSTR)
+  const sub = announce(part('lazy', 40_000))
+  expect(((await $.prompt.attachment({ type: 'mcp_instructions_delta', text: sub, origin: { kind: 'engine' }, agentId: 'a1' } as never)) as any).text).toBe(sub)
+  await done($)
+  expect(saved(s.store, 'i6').base.mcp.lazy.tokens).toBe(216)
+})
+
+test('a new session starts with no announcements', async ($, on) => {
+  const s = stub(on, { id: 'i7', breakdown: bd({ mcpTools: lazyTools }) })
+  await begin($)
+  await attach($, INSTR)
+  await begin($)
+  await attach($, announce(part('lazy', 400)))
+  await done($)
+  const base = saved(s.store, 'i7').base
+  expect(base.mcp.lazy.tokens).toBe(216)
+  expect(base.mcp.mixed.tokens).toBe(4007) // the first session's announcement of mixed is gone
 })

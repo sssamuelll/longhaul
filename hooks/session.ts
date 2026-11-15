@@ -9,7 +9,7 @@ let epochN = 0
 export const epoch = (): number => epochN
 export const newEpoch = (): void =>
   void (epochN++, (lastMainCtx = 0), (compactPending = false), (floorCtx = 0), (aboveSoftLogged = false), (epochFiles = []),
-  (startCtx = 0), (startPending = true), (floorPending = false), (promptChars = 0))
+  (startCtx = 0), (startPending = true), (floorPending = false), (promptChars = 0), (instrParts = []))
 
 // The start load and the floor after a compaction are measured on the next main step. That step also
 // carries the prompt just sent, so the prompt's estimated size comes off.
@@ -18,15 +18,12 @@ let startPending = true
 let floorPending = false
 let promptChars = 0
 export const getStartCtx = (): number => startCtx
-// Instruction lengths per server, kept apart from newEpoch: only listed servers are counted, so a stale name is harmless.
-let instrParts: [string, number][] = []
-export const getInstructionParts = (): [string, number][] => instrParts
-export const addInstructionParts = (parts: [string, number][]): void => {
-  for (const [name, len] of parts) {
-    const i = instrParts.findIndex(([n]) => n === name)
-    if (i < 0) instrParts.push([name, len])
-    else instrParts[i] = [name, len]
-  }
+// Instruction lengths, one list per announcement of the session that is running; newEpoch clears them.
+// ponytail: the first 64 announcements of a session are kept; the snapshot is taken after the first reply, so later ones are never read.
+let instrParts: [number, number][][] = []
+export const getInstructionParts = (): [number, number][][] => instrParts
+export const addInstructionParts = (parts: [number, number][]): void => {
+  if (parts.length && instrParts.length < 64) instrParts.push(parts)
 }
 export const markFloorPending = (): void => void (floorPending = true)
 export const notePrompt = (chars: number): void => void (promptChars = chars)
