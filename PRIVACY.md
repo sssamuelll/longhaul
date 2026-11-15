@@ -10,6 +10,8 @@ longhaul runs entirely on your machine. It makes no network calls, sends no tele
 - **Session usage that Claude Code reports**: context size, token counts, the weekly limit percentage and its reset time.
 - **The context breakdown that Claude Code reports**: the MCP tools of each server, whether each one's schema is loaded and how many tokens a loaded one takes, the memory files it loaded and the number of skills. A tool whose schema is not loaded is counted by the length of its name.
 - **The instructions MCP servers send to Claude**, as they pass, to count their length per server. The text is passed on unchanged and never kept.
+- **The name of each MCP server Claude Code is about to connect, and the plugin it comes from**, when `mcp_mode` is `on`, to compare it with your rules.
+- **The session's project folder**, and where that folder really is on disk, since one folder can have two spellings. The same lookup runs for a full path you type into a rule. It is one file-system lookup each time, and no file is opened.
 - **Those memory files**, to count their lines and find long lines repeated across them. Their contents are not kept.
 - **The rules file you name in `rules_file`**, if you set one.
 
@@ -17,7 +19,8 @@ longhaul runs entirely on your machine. It makes no network calls, sends no tele
 
 No files. Everything it keeps is in the storage Claude Code gives each plugin:
 
-- One record per session: the project folder, token counts and estimated costs, limit percentages over time, how many calls went to each MCP server, compactions (when, why, size before and after), handoff outcomes with the rule ids that matched and the files the subagent touched, and the context estimate (paths, line counts, token estimates). Records older than 21 days are deleted.
+- One record per session: the project folder's full path, token counts and estimated costs, limit percentages over time, how many calls went to each MCP server, compactions (when, why, size before and after), handoff outcomes with the rule ids that matched and the files the subagent touched, and the context estimate (paths, line counts, token estimates). Records older than 21 days are deleted.
+- Your MCP rules: for each server, the folder names and paths in its rule (stored as real paths when the folder exists). A rule stays until you remove it.
 - A few dates, so a heads-up shows at most once a day or once a week.
 
 ## What it runs

@@ -1,6 +1,6 @@
 {
   "name": "longhaul",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "description": "Smart compaction checkpoints between tasks, lighter subagent delegation, and startup context health.",
   "license": "MIT",
   "author": {

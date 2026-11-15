@@ -1,6 +1,6 @@
 {
   "name": "longhaul",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "author": {
     "name": "Samuel Ballesteros"
   },
@@ -59,6 +59,16 @@
       "options": [
         "auto",
         "off"
+      ]
+    },
+    "mcp_mode": {
+      "type": "string",
+      "title": "MCP rules",
+      "description": "Loads an MCP server only in the folders its rule names. Rules are typed with /longhaul mcp. off saves rules without applying them, on applies them when a session starts.",
+      "default": "off",
+      "options": [
+        "off",
+        "on"
       ]
     },
     "soft_limit": {
