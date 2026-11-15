@@ -259,7 +259,7 @@ test('the connection is reported as the engine answered', () => {
   expect(connectLine(undefined)).toBe('It did not connect.')
 })
 
-type Opt = { id: string; breakdown?: unknown; reject?: boolean; files?: Record<string, string>; store?: Map<string, unknown>; cwd?: string; history?: boolean; seeds?: object[]; ctx?: number; root?: string | (() => string); real?: Record<string, string> }
+type Opt = { id: string; breakdown?: unknown; reject?: boolean; files?: Record<string, string>; store?: Map<string, unknown>; cwd?: string; history?: boolean; seeds?: object[]; ctx?: number; root?: string | (() => string); real?: Record<string, string>; frozen?: boolean; denySet?: boolean; denyRulesFrom?: number }
 function stub(on: any, o: Opt) {
   const files: Record<string, string> = { ...(o.files ?? {}) } // memory files
   const store = o.store ?? new Map<string, unknown>()
@@ -268,6 +268,9 @@ function stub(on: any, o: Opt) {
   const state = new Map<string, unknown>()
   const calls = { breakdown: [] as unknown[], lists: 0 }
   const stats: string[] = []
+  const order: string[] = []
+  const asked: any[] = []
+  let ruleReads = 0
   const real = o.real ?? {}
   const find = (p: string): string | undefined => Object.keys(files).find((k) => norm(k) === norm(p))
   on('session.id', async () => ({ value: o.id }))
@@ -281,8 +284,15 @@ function stub(on: any, o: Opt) {
   on('ui.log', async () => ({ value: undefined }))
   on('ui.status', async () => ({ value: undefined }))
   on('clock.now', async () => ({ value: now }))
-  on('store.get', async (_$: any, e: any) => ({ value: store.get(e.key) }))
-  on('store.set', async (_$: any, e: any) => (store.set(e.key, JSON.parse(JSON.stringify(e.value))), { value: undefined }))
+  on('store.get', async (_$: any, e: any) => (e.key === 'mcp:rules' && o.denyRulesFrom && ++ruleReads >= o.denyRulesFrom ? { deny: 'unreadable' } : { value: store.get(e.key) }))
+  on('store.set', async (_$: any, e: any) => {
+    if (e.key !== 'mcp:rules') return (store.set(e.key, JSON.parse(JSON.stringify(e.value))), { value: undefined })
+    order.push('store.set')
+    if (o.denySet) return { deny: 'full' }
+    if (!o.frozen) store.set(e.key, JSON.parse(JSON.stringify(e.value)))
+    return { value: undefined }
+  })
+  on('mcp.connect', async (_$: any, e: any) => (order.push('mcp.connect'), asked.push(e), { value: { isConnected: true, server: e.server } }) as never)
   on('store.delete', async (_$: any, e: any) => (store.delete(e.key), { value: undefined }))
   on('store.keys', async () => (calls.lists++, { value: [...store.keys()] }))
   on('state.get', async (_$: any, e: any) => ({ value: { value: state.get(e.key), version: 0 } as never }))
@@ -302,7 +312,7 @@ function stub(on: any, o: Opt) {
       return { turnId: 't', index: 0, answer: '', toolUses: [], usage: { model: 'claude-opus-5-5', input_tokens: 0, output_tokens: 0, cache_read_input_tokens: o.ctx, cache_creation_input_tokens: 0 } } as never
     })
   }
-  return { store, state, calls, stats }
+  return { store, state, calls, stats, order, asked }
 }
 
 const started = new WeakSet<object>()
@@ -337,4 +347,126 @@ test('when the lookup fails the reported folder is kept', async ($, on) => {
   await start($)
   await turn($)
   expect((s.store.get('session:r2') as { root: string }).root).toBe('D:/w/r2')
+})
+
+const ON = { options: { mcp_mode: 'on' } }
+const run = ($: any, args: string) => $.command.run({ command: 'longhaul', args })
+const rules = (s: { store: Map<string, unknown> }) => s.store.get('mcp:rules')
+const tool = (s: string) => ({ mcpTools: [{ name: 'mcp__' + s + '__x', serverName: s, tokens: 100, isLoaded: true }] })
+
+test('everywhere saves first, then asks for the connection', ON, async ($, on) => {
+  const s = stub(on, { id: 'h1', root: '/w/h1', store: new Map([['mcp:rules', { h1: ['elsewhere'] }]]) })
+  await start($)
+  const r: any = await run($, 'mcp h1 everywhere')
+  expect(s.order).toEqual(['store.set', 'mcp.connect'])
+  expect(rules(s)).toEqual({})
+  expect(s.asked[0].server).toBe('h1')
+  expect(r.text).toBe('h1 has no rule and loads everywhere.\nIt is on in this session.')
+})
+
+test("here adds this folder's real path, then connects", ON, async ($, on) => {
+  const s = stub(on, { id: 'h2', root: '/w/h2', real: { '/w/h2': 'D:\\real\\h2' }, store: new Map([['mcp:rules', { h2: ['elsewhere'] }]]) })
+  await start($)
+  const r: any = await run($, 'mcp h2 here')
+  expect(rules(s)).toEqual({ h2: ['elsewhere', 'D:/real/h2'] })
+  expect(s.order).toEqual(['store.set', 'mcp.connect'])
+  expect(r.text).toBe('h2 loads only in elsewhere, D:/real/h2.\nIt is on in this session.')
+})
+
+test('a rule that could not be saved connects nothing', ON, async ($, on) => {
+  const s = stub(on, { id: 'h3', root: '/w/h3', denySet: true, store: new Map([['mcp:rules', { h3: ['elsewhere'] }]]) })
+  await start($)
+  const r: any = await run($, 'mcp h3 everywhere')
+  expect(r.text).toBe('The rule could not be saved, so nothing changed. Try the command again.')
+  expect(s.asked).toEqual([])
+})
+
+test('the hook holds a server whose stored rule leaves this folder out', ON, async ($, on) => {
+  const s = stub(on, { id: 'h4', root: '/w/h4', frozen: true, store: new Map([['mcp:rules', { h4: ['elsewhere'] }]]) }) // the save does not take
+  await start($)
+  const r: any = await run($, 'mcp h4 everywhere')
+  expect(s.asked).toEqual([]) // the engine was never asked
+  expect(r.text).toContain('It did not connect: longhaul holds h4 in this folder: /longhaul mcp h4 here turns it on.')
+})
+
+test('a rule set the hook cannot read holds nothing', ON, async ($, on) => {
+  // as the test above, but the hook's own read (the second) is refused: it passes the server on
+  const s = stub(on, { id: 'h7', root: '/w/h7', frozen: true, denyRulesFrom: 2, store: new Map([['mcp:rules', { h7: ['elsewhere'] }]]) })
+  await start($)
+  const r: any = await run($, 'mcp h7 everywhere')
+  expect(s.asked.length).toBe(1)
+  expect(r.text).toContain('It is on in this session.')
+})
+
+test('a command writes nothing when the rules cannot be read', ON, async ($, on) => {
+  const s = stub(on, { id: 'h16', root: '/w/h16', denyRulesFrom: 1, breakdown: tool('h16') })
+  await start($)
+  expect(((await run($, 'mcp h16 off')) as any).text).toBe('The rules could not be read, so nothing changed. Try the command again.')
+  expect(((await run($, 'mcp')) as any).text).toBe('The rules could not be read, so nothing changed. Try the command again.')
+  expect(s.order).toEqual([])
+})
+
+test('a stored value that is not a rule set is replaced by the next command', ON, async ($, on) => {
+  const s = stub(on, { id: 'h5', root: '/w/h5', breakdown: tool('h5'), store: new Map([['mcp:rules', 'garbage']]) })
+  await start($)
+  await run($, 'mcp h5 off')
+  expect(rules(s)).toEqual({ h5: [] })
+})
+
+test('with mcp_mode off a rule is saved and no connection is asked for', async ($, on) => {
+  const s = stub(on, { id: 'h8', root: '/w/h8', breakdown: tool('h8') })
+  await start($)
+  const off: any = await run($, 'mcp h8 off')
+  expect(rules(s)).toEqual({ h8: [] })
+  expect(off.text).toBe('h8 is off in every folder.\nRules are saved but not applied. To apply them, set mcp_mode to on in /plugin and run /reload-plugins.')
+  await run($, 'mcp h8 everywhere')
+  expect(s.asked).toEqual([])
+  expect(((await run($, 'mcp')) as any).text.startsWith('Rules are saved but not applied.')).toBe(true)
+})
+
+test('an unknown server is refused and nothing is saved', ON, async ($, on) => {
+  const s = stub(on, { id: 'h9', root: '/w/h9', breakdown: tool('h9') })
+  await start($)
+  const r: any = await run($, 'mcp nosuch-h9 off')
+  expect(r.text).toContain('No MCP server is called "nosuch-h9". Known: ')
+  expect(r.text.split('Known: ')[1]).toContain('h9')
+  expect(s.store.has('mcp:rules')).toBe(false)
+  expect(((await run($, 'mcp longhaul off')) as any).text).toBe("longhaul's own server is never held.")
+  expect(((await run($, 'mcp h9 only vina ~/x')) as any).text).toContain('~ is not read as your home folder, so nothing was saved.')
+  expect(s.store.has('mcp:rules')).toBe(false)
+})
+
+test('a typed full path is saved as its real path, and as typed when its folder is missing', ON, async ($, on) => {
+  const s = stub(on, { id: 'h11', root: '/w/h11', real: { '/junction/x': 'E:\\real\\x' }, breakdown: tool('h11') })
+  await start($)
+  const r: any = await run($, 'mcp h11 only D:/junction/x D:/gone/y')
+  expect(rules(s)).toEqual({ h11: ['E:/real/x', 'D:/gone/y'] })
+  expect(r.text).toContain('D:/gone/y was not found, so it was saved as typed.')
+})
+
+test('the list prints a rule whose folder is gone and never looks that folder up', ON, async ($, on) => {
+  const s = stub(on, { id: 'h12', root: '/w/h12', store: new Map([['mcp:rules', { h12: ['D:/gone/z'] }]]) })
+  await start($)
+  const r: any = await run($, 'mcp')
+  expect(r.text).toContain('h12: cost not measured yet\n  rule: only D:/gone/z (held in this folder)\n  not seen in the last 21 days')
+  expect(s.stats.every((p) => p === '/w/h12')).toBe(true)
+})
+
+test('a rule saved by another session survives a command typed here', ON, async ($, on) => {
+  const s = stub(on, { id: 'h13', root: '/w/h13', breakdown: tool('h13') })
+  await start($)
+  await run($, 'mcp h13 off')
+  s.store.set('mcp:rules', { h13: [], other13: ['x'] }) // another session saved a rule
+  await run($, 'mcp h13 everywhere')
+  expect(rules(s)).toEqual({ other13: ['x'] })
+})
+
+test('here means the folder the session is in now', ON, async ($, on) => {
+  let root = '/w/h14a'
+  const s = stub(on, { id: 'h14', root: () => root, store: new Map([['mcp:rules', { h14: ['elsewhere'] }]]) })
+  await start($)
+  await run($, 'mcp h14 here')
+  root = '/w/h14b' // after /cd
+  await run($, 'mcp h14 here')
+  expect(rules(s)).toEqual({ h14: ['elsewhere', '/w/h14a', '/w/h14b'] })
 })

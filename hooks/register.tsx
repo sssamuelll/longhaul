@@ -11,7 +11,8 @@ import { eventText, meterSegs } from './band'
 import { buildReport, renderText, unusedServers, windowOf, type ReportData } from './report'
 import { NOTICE_TOTAL, NOTICE_EVERY, DUP_TOKENS, instructionParts, snapshotOf, unusedOf, addCalls, historyOf, healthAdvice, renderHealth, type BaseSnapshot } from './health'
 import { DEFAULT_RULES, parseRules, takeRulesWarn, type Rule } from './rules'
-import { parseCommand, HELP, normPath, type Here } from './mcp'
+import type { History } from './health'
+import { parseCommand, HELP, normPath, RULES_KEY, readRuleSet, findRule, isProtected, holds, holdMessage, checkPattern, noteSeen, seenServers, knownServers, foldersOf, suggestionsOf, renderList, resolveServer, planVerb, connectLine, NOT_SAVED, NOT_READ, type Command, type Here, type RuleSet, type Known, type Typed } from './mcp'
 import { classify } from './classifier'
 import { HANDOFF, ASK_HANDOFF, SUBAGENT_NOTE, REVIEW_TOOL, OUTCOMES, isExpensiveMain, noteEdit, applyReview, ageDecisions, getRules, setRules, clearMainEdited, resetHandoff } from './handoff'
 
@@ -426,6 +427,99 @@ async function runReport($: EngineInterface, cfg: Config): Promise<{ text: strin
   return { text: renderText(d) }
 }
 
+// ---- MCP rules ----
+
+type Gathered = { now: number; records: SessionRecord[]; rules: RuleSet | null; here: Here; known: Known[]; history: History } // rules null: the store refused the read
+
+// Every kept record with this session's on top. A failing source counts as empty, except the rules.
+async function gather($: EngineInterface): Promise<Gathered> {
+  const now = await $.clock.now()
+  const stored = await listRecords($, now - KEEP_DAYS * DAY)
+  let records = stored
+  try {
+    const rec = await current($)
+    records = [...stored.filter((r) => r.id !== rec.id), rec]
+  } catch (err) {
+    fail($, 'mcp current record', err)
+  }
+  let rules: RuleSet | null
+  try {
+    rules = readRuleSet(await $.store.get(RULES_KEY)) ?? {} // a stored value that is not a rule set counts as {}
+  } catch {
+    rules = null
+  }
+  let tools: { name: string; serverName?: string }[] = []
+  try {
+    tools = (await $.session.usage({ breakdown: 'summary' }))?.context?.breakdown?.mcpTools ?? []
+  } catch {
+    // no breakdown: the servers are known from the hook and the records
+  }
+  let here: Here = { root: '' }
+  try {
+    here = await sessionFolders($)
+  } catch (err) {
+    fail($, 'mcp folder', err)
+  }
+  const known = knownServers({ seen: seenServers(), tools, records, rules: rules ?? {} })
+  return { now, records, rules, here, known, history: historyOf(records, now) }
+}
+
+async function holdsHere($: EngineInterface, server: string, provider?: string): Promise<boolean> {
+  noteSeen(server, false)
+  if (isProtected(server, provider)) return false
+  const rules = readRuleSet(await $.store.get(RULES_KEY))
+  if (!rules || !findRule(rules, server)) return false
+  const here = await sessionFolders($)
+  const hold = holds(rules, server, provider, [here.root, ...(here.real ? [here.real] : [])])
+  noteSeen(server, hold)
+  return hold
+}
+
+async function runMcp($: EngineInterface, cfg: Config, cmd: Command): Promise<{ text: string }> {
+  const g = await gather($)
+  if (!g.rules) return { text: NOT_READ }
+  const isOn = cfg.mcpMode === 'on'
+  if (cmd.kind !== 'verb') {
+    const folders = foldersOf(g.records)
+    return { text: renderList(g.known, { suggestions: suggestionsOf(g.known, folders, g.history, g.now), folders, here: g.here, isOn, history: g.history, now: g.now }) }
+  }
+  const k = resolveServer(g.known, cmd.server)
+  if ('error' in k) return { text: k.error }
+  const typed: Typed[] = []
+  if (cmd.verb === 'only') {
+    const checked = cmd.patterns.map(checkPattern)
+    for (const c of checked) if ('error' in c) return { text: c.error }
+    for (const c of checked as { pattern: string; isPath: boolean }[]) {
+      if (!c.isPath) {
+        typed.push(c)
+        continue
+      }
+      const real = await statReal($, c.pattern)
+      typed.push(real ? { pattern: normPath(real), isPath: true } : { ...c, isMissing: true })
+    }
+  }
+  const plan = planVerb(k, cmd.verb, typed, g.rules, g.here, isOn)
+  if (plan.rules) {
+    try {
+      await $.store.set(RULES_KEY, plan.rules)
+    } catch (err) {
+      fail($, 'save mcp rule', err)
+      return { text: NOT_SAVED }
+    }
+  }
+  const lines = [...plan.lines]
+  if (plan.connect) {
+    let answer: { isConnected?: boolean; message?: string } | undefined
+    try {
+      answer = await $.mcp.connect(k.name)
+    } catch (err) {
+      answer = { isConnected: false, message: err instanceof Error ? err.message : String(err) }
+    }
+    lines.splice(1, 0, connectLine(answer))
+  }
+  return { text: lines.join('\n') }
+}
+
 async function registerReport($: EngineInterface): Promise<void> {
   try {
     await $.command.register({ name: 'longhaul', description: "Where this week's tokens went and why", argumentHint: '[health | mcp]' })
@@ -782,6 +876,17 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
+  if (cfg.mcpMode === 'on')
+    on('mcp.connect', async ($, e, next) => {
+      let hold = false
+      try {
+        hold = await holdsHere($, e.server, e.provider?.plugin)
+      } catch (err) {
+        fail($, 'mcp rule', err)
+      }
+      return hold ? { value: { isConnected: false, reason: 'disabled', message: holdMessage(e.server) } } : next(e)
+    })
+
   on('command.run', { command: 'longhaul' }, async ($, e) => {
     try {
       const cmd = parseCommand(e.args ?? '')
@@ -789,7 +894,7 @@ export const register: Register = (on, options) => {
         case 'health': return await runHealth($)
         case 'help': return { text: `${cmd.why}\n\n${HELP}` }
         case 'list':
-        case 'verb': return { text: 'MCP rules are not built yet.' }
+        case 'verb': return await runMcp($, cfg, cmd)
         default: return await runReport($, cfg)
       }
     } catch (err) {

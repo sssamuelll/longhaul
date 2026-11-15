@@ -4,6 +4,7 @@ export type Config = {
   classifierMode: Mode
   budgetMode: 'auto' | 'off'
   healthMode: 'auto' | 'off'
+  mcpMode: 'on' | 'off'
   softLimit: number
   hardLimit: number
   rulesFile: string
@@ -27,6 +28,7 @@ export function readConfig(options: Record<string, unknown>): Config {
     classifierMode: pick(options.classifier_mode, ['auto', 'ask', 'off'], 'auto'),
     budgetMode: pick(options.budget_mode, ['auto', 'off'], 'auto'),
     healthMode: pick(options.health_mode, ['auto', 'off'], 'auto'),
+    mcpMode: pick(options.mcp_mode, ['on', 'off'], 'off'),
     softLimit,
     hardLimit,
     rulesFile: typeof options.rules_file === 'string' ? options.rules_file.trim() : '',
