@@ -128,11 +128,14 @@ const folderOf = (r: SessionRecord): string => r.root ?? r.project
 
 const wireOf = (tool: string): string | undefined => tool.match(/^mcp__(.+?)__/)?.[1]
 
+// Claude Code's stand-ins for a server that is waiting for sign-in: they do not mean it is connected
+const AUTH_STUB = /__(authenticate|complete_authentication)$/
+
 // the session's context lists one of its tools, so it is connected under whatever name connect was asked with
 export const hasTools = (tools: { name: string }[], key: string): boolean =>
   tools.some((t) => {
     const wire = wireOf(t.name)
-    return wire !== undefined && nameKey(wire) === key
+    return wire !== undefined && nameKey(wire) === key && !AUTH_STUB.test(t.name)
   })
 
 export function knownServers(src: { seen: Seen[]; tools: { name: string; serverName?: string }[]; records: SessionRecord[]; rules: RuleSet }): Known[] {

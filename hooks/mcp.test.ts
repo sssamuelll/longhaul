@@ -20,6 +20,12 @@ test('a server is in the session when the context lists one of its tools, in eit
   expect(hasTools([], nameKey('kicad'))).toBe(false)
 })
 
+test('a sign-in stand-in does not put a server in the session', () => {
+  expect(hasTools([{ name: 'mcp__claude_ai_Higgsfield__authenticate' }], nameKey('claude.ai Higgsfield'))).toBe(false)
+  expect(hasTools([{ name: 'mcp__plugin_figma_figma__authenticate' }, { name: 'mcp__plugin_figma_figma__complete_authentication' }], nameKey('plugin:figma:figma'))).toBe(false)
+  expect(hasTools([{ name: 'mcp__claude_ai_Higgsfield__authenticate' }, { name: 'mcp__claude_ai_Higgsfield__generate' }], nameKey('claude.ai Higgsfield'))).toBe(true)
+})
+
 test('a name pattern matches between separators, any case', () => {
   for (const f of ['D:\\Desktop\\projects\\vina', 'D:\\Desktop\\projects\\_wt\\vina-bake', 'D:\\x\\vina-test', 'd:\\desktop\\projects\\VINA'])
     expect(matchesFolder(['vina'], [f])).toBe(true)
@@ -310,7 +316,7 @@ test('the connection is reported as the engine answered', () => {
   expect(connectLine(undefined)).toBe('It did not connect.')
 })
 
-type Opt = { id: string; breakdown?: unknown; reject?: boolean; files?: Record<string, string>; store?: Map<string, unknown>; cwd?: string; history?: boolean; seeds?: object[]; ctx?: number; root?: string | (() => string); real?: Record<string, string>; frozen?: boolean; denySet?: boolean; denyRulesFrom?: number; unlisted?: string[] }
+type Opt = { id: string; breakdown?: unknown; reject?: boolean; files?: Record<string, string>; store?: Map<string, unknown>; cwd?: string; history?: boolean; seeds?: object[]; ctx?: number; root?: string | (() => string); real?: Record<string, string>; frozen?: boolean; denySet?: boolean; denyRulesFrom?: number; unlisted?: string[]; refuse?: Record<string, { reason: string; message: string }> }
 function stub(on: any, o: Opt) {
   const files: Record<string, string> = { ...(o.files ?? {}) } // memory files
   const store = o.store ?? new Map<string, unknown>()
@@ -343,7 +349,7 @@ function stub(on: any, o: Opt) {
     if (!o.frozen) store.set(e.key, JSON.parse(JSON.stringify(e.value)))
     return { value: undefined }
   })
-  on('mcp.connect', async (_$: any, e: any) => (order.push('mcp.connect'), asked.push(e), { value: o.unlisted?.includes(e.server) ? { isConnected: false, reason: 'unlisted', message: `Neither this plugin's manifest nor /mcp lists an MCP server named "${e.server}".` } : { isConnected: true, server: e.server } }) as never)
+  on('mcp.connect', async (_$: any, e: any) => (order.push('mcp.connect'), asked.push(e), { value: o.refuse?.[e.server] ? { isConnected: false, ...o.refuse[e.server] } : o.unlisted?.includes(e.server) ? { isConnected: false, reason: 'unlisted', message: `Neither this plugin's manifest nor /mcp lists an MCP server named "${e.server}".` } : { isConnected: true, server: e.server } }) as never)
   on('store.delete', async (_$: any, e: any) => (store.delete(e.key), { value: undefined }))
   on('store.keys', async () => (calls.lists++, { value: [...store.keys()] }))
   on('state.get', async (_$: any, e: any) => ({ value: { value: state.get(e.key), version: 0 } as never }))
@@ -588,6 +594,21 @@ test('an unlisted server with no tools in the session keeps the refusal, also wh
   expect(((await run($, 'mcp h31 everywhere')) as any).text).toBe('h31 has no rule and loads everywhere.\n' + refusal)
   // the mod's own call passed through its hook and noted h31 as seen: it is still not on
   expect(((await run($, 'mcp h31 here')) as any).text).toBe('h31 has no rule and loads everywhere.\n' + refusal)
+})
+
+test('a server waiting for sign-in keeps the refusal when the engine refuses its tool-name spelling', ON, async ($, on) => {
+  const s = stub(on, { id: 'h32', root: '/w/h32', breakdown: { mcpTools: [{ name: 'mcp__claude_ai_H32__authenticate', serverName: 'claude_ai_H32', tokens: 100, isLoaded: true }] }, unlisted: ['claude_ai_H32'] })
+  await start($)
+  const r: any = await run($, 'mcp claude.ai H32 here')
+  expect(s.asked.map((e) => e.server)).toEqual(['claude_ai_H32'])
+  expect(r.text).toBe('claude_ai_H32 has no rule and loads everywhere.\nIt did not connect: Neither this plugin\'s manifest nor /mcp lists an MCP server named "claude_ai_H32".')
+})
+
+test('a refusal other than unlisted is reported even when the context lists the server\'s tools', ON, async ($, on) => {
+  stub(on, { id: 'h33', root: '/w/h33', breakdown: tool('h33'), refuse: { h33: { reason: 'auth', message: 'needs sign-in.' } } })
+  await start($)
+  const r: any = await run($, 'mcp h33 here')
+  expect(r.text).toBe('h33 has no rule and loads everywhere.\nIt did not connect: needs sign-in.')
 })
 
 test('an unknown session folder holds nothing and saves nothing', ON, async ($, on) => {
