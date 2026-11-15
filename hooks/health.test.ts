@@ -641,3 +641,11 @@ test('a new session starts with no announcements', async ($, on) => {
   expect(base.mcp.lazy.tokens).toBe(216)
   expect(base.mcp.mixed.tokens).toBe(4007) // the first session's announcement of mixed is gone
 })
+
+test('a heading in the /mcp spelling finds a server the breakdown names by its tools', async () => {
+  // Claude Code 2.1.325 announces `## claude.ai Higgsfield` and lists the tools under `claude_ai_Higgsfield`
+  const tools = [...lazyTools, { name: 'mcp__claude_ai_Higgsfield__generate', serverName: 'claude_ai_Higgsfield', tokens: 800, isLoaded: false }] // 35 characters
+  const s = snapshotOf(bd({ mcpTools: tools }) as never, new Map(), 1, { instructions: [instructionParts(announce(part('lazy', 400), part('claude.ai Higgsfield', 1000)))] })
+  expect(s.mcp.lazy.tokens).toBe(216) // 16 + 400 / 2, nothing from the next server
+  expect(s.mcp.claude_ai_Higgsfield).toEqual({ tools: 1, tokens: 518, loaded: 0 }) // 18 + 1000 / 2
+})

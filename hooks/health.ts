@@ -63,9 +63,12 @@ export function findDuplicates(files: { path: string; text: string }[]): BaseSna
 type Breakdown = NonNullable<NonNullable<SessionUsage['context']>['breakdown']>
 
 // Stands for a heading (32-bit FNV-1a of its UTF-16 code units) so that no instruction text is held.
+// A run of characters that are not letters or digits counts as one `_`: a heading spells the server as
+// /mcp does (`claude.ai Docs`), a tool's name spells it `claude_ai_Docs`, and both give the same key.
 export function headingKey(s: string): number {
+  const t = s.replace(/[^A-Za-z0-9]+/g, '_')
   let h = 0x811c9dc5
-  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 0x01000193)
+  for (let i = 0; i < t.length; i++) h = Math.imul(h ^ t.charCodeAt(i), 0x01000193)
   return h >>> 0
 }
 
@@ -98,10 +101,10 @@ export function instructionChars(parts: [number, number][], servers: string[]): 
 export function snapshotOf(b: Breakdown, texts: Map<string, string>, at: number, extra: SnapshotExtra = {}): BaseSnapshot {
   const mcp: BaseSnapshot['mcp'] = {}
   const loaded: Record<string, number> = {}
-  const keyOf: Record<string, string> = {} // /mcp name -> key
+  const keyOf: Record<string, string> = {} // a name the server goes by -> key
   for (const t of b.mcpTools ?? []) {
     const key = WIRE.exec(t.name)?.[1] ?? t.serverName
-    keyOf[t.serverName] = key
+    keyOf[t.serverName] = keyOf[key] = key
     if (key === 'longhaul') continue
     const s = (mcp[key] ??= { tools: 0, tokens: 0, ...(t.serverName !== key ? { label: t.serverName } : {}) })
     s.tools++
