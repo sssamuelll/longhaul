@@ -1,6 +1,6 @@
 import { test, expect } from 'claude-code/testing'
 import { findDuplicates, headingKey, healthAdvice, instructionChars, instructionParts, renderHealth, snapshotOf, unusedOf, type BaseSnapshot } from './health'
-import { START_CAP, getInstructionParts } from './session'
+import { START_CAP } from './session'
 import { newRecord } from './ledger'
 
 const DAY = 86_400_000
@@ -542,9 +542,7 @@ test('a later announcement replaces one server and keeps the others', async ($, 
   const s = stub(on, { id: 'i2', breakdown: bd({ mcpTools: lazyTools }) })
   await begin($)
   await attach($, INSTR)
-  await attach($, `# MCP Server Instructions
-
-${part('mixed', 300)}`)
+  await attach($, `# MCP Server Instructions\n\n${part('mixed', 300)}`)
   await done($)
   const base = saved(s.store, 'i2').base
   expect(base.mcp.lazy.tokens).toBe(216) // kept
@@ -565,9 +563,7 @@ test('an attachment the parser cannot read is passed on and changes nothing', as
 test('the heads-up counts an unused on-demand server', async ($, on) => {
   const s = stub(on, { id: 'i3', breakdown: bd({ mcpTools: lazyTools }) })
   await begin($)
-  await attach($, `# MCP Server Instructions
-
-${part('lazy', 40_000)}${part('mixed', 100)}`)
+  await attach($, `# MCP Server Instructions\n\n${part('lazy', 40_000)}${part('mixed', 100)}`)
   await done($)
   expect(healthEvent(s.state)).toEqual({ kind: 'health', total: 93_000, unusedMcp: 35_073, duplicate: 0 }) // 20,016 + 4,057 + 11,000
 })
@@ -590,9 +586,7 @@ test('a capped start measure is not saved', { options: { guard_mode: 'off' } }, 
   expect(saved(s.store, 'ms2').base.measured).toBeUndefined()
 })
 
-const announce = (...parts: string[]) => `# MCP Server Instructions
-
-${parts.join('')}`
+const announce = (...parts: string[]) => `# MCP Server Instructions\n\n${parts.join('')}`
 const withInstr = (...texts: string[]) => snapshotOf(bd({ mcpTools: lazyTools }) as never, new Map(), 1, { instructions: texts.map(instructionParts) })
 
 test('a heading that two servers share is counted to each', async () => {
@@ -620,7 +614,7 @@ test('only numbers are held and no heading reaches the store', async ($, on) => 
   const s = stub(on, { id: 'i5', breakdown: bd({ mcpTools: lazyTools }) })
   await begin($)
   await attach($, announce(part('lazy', 400), part('Zebra-Heading', 60), part('mixed', 100)))
-  expect(getInstructionParts().flat(2).every((v) => typeof v === 'number')).toBe(true)
+  expect(instructionParts(announce(part('Zebra-Heading', 60))).flat().every((v) => typeof v === 'number')).toBe(true) // what the hook hands on to memory
   await done($)
   expect(saved(s.store, 'i5').base.mcp.lazy.tokens).toBe(246) // 16 + 460 / 2
   expect(JSON.stringify([...s.store.values()])).not.toContain('Zebra')
