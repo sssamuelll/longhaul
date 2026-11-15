@@ -1,6 +1,6 @@
 // Which MCP servers are held back in which folder. No engine calls, no environment, no value imports from ./health.
 import type { History } from './health'
-import { KEEP_DAYS, type SessionRecord } from './ledger'
+import { KEEP_DAYS, MIN_HISTORY, type SessionRecord } from './ledger'
 import { localDate } from './budget'
 
 export const RULES_KEY = 'mcp:rules'
@@ -33,6 +33,7 @@ export function matchesFolder(patterns: string[], folders: string[]): boolean {
   const fs = folders.map((f) => normPath(f).toLowerCase())
   return patterns.some((raw) => {
     const p = normPath(raw).toLowerCase()
+    if (!p) return false // an empty pattern would match any path that starts with a separator
     if (p.includes('/')) return fs.some((f) => f === p || f.startsWith(p.endsWith('/') ? p : p + '/'))
     const re = new RegExp(`(^|[\\\\/_.-])${esc(p)}($|[\\\\/_.-])`, 'i')
     return fs.some((f) => re.test(f))
@@ -83,7 +84,7 @@ export const HELP = [
 
 // Words split on spaces; a part in double quotes is one word.
 export function parseCommand(args: string): Command {
-  const words = [...args.matchAll(/"([^"]*)"|(\S+)/g)].map((m) => m[1] ?? m[2])
+  const words = [...args.matchAll(/"([^"]*)"|(\S+)/g)].map((m) => m[1] ?? m[2] ?? '')
   const head = words[0]?.toLowerCase()
   if (head === undefined) return { kind: 'report' }
   if (head === 'health' && words.length === 1) return { kind: 'health' }
@@ -92,7 +93,7 @@ export function parseCommand(args: string): Command {
   if (!rest.length) return { kind: 'list' }
   const at = rest.findIndex((w) => VERBS.includes(w.toLowerCase()))
   if (at === -1) return { kind: 'help', why: `After "${rest.join(' ')}", type only, here, everywhere or off.` }
-  const verb = rest[at].toLowerCase() as Verb
+  const verb = rest[at]!.toLowerCase() as Verb
   const patterns = rest.slice(at + 1)
   if (at === 0) return { kind: 'help', why: `Name the server before ${verb}.` }
   if (verb === 'only' && !patterns.length) return { kind: 'help', why: 'After only, type at least one folder name or full path.' }
@@ -120,12 +121,13 @@ export type Known = {
   tokens?: number // from the newest kept snapshot that has it
   calls: [folder: string, calls: number][] // most calls first
   idleIn: string[] // a kept snapshot had it and no kept record has a call
+  since?: number // startedAt of the oldest kept record that shows it; absent when none does
 }
 
 const folderOf = (r: SessionRecord): string => r.root ?? r.project
 
 export function knownServers(src: { seen: Seen[]; tools: { name: string; serverName?: string }[]; records: SessionRecord[]; rules: RuleSet }): Known[] {
-  type Acc = { names: Record<'seen' | 'rule' | 'tool' | 'label' | 'key', string | undefined>; isOn: boolean; isSeen: boolean; snap?: { at: number; tools: number; tokens: number }; calls: Map<string, number>; withSnap: Set<string> }
+  type Acc = { names: Record<'seen' | 'rule' | 'tool' | 'label' | 'key', string | undefined>; isOn: boolean; isSeen: boolean; snap?: { at: number; tools: number; tokens: number }; calls: Map<string, number>; withSnap: Set<string>; since?: number }
   const acc = new Map<string, Acc>()
   const get = (wire: string): Acc => {
     const k = nameKey(wire)
@@ -150,14 +152,17 @@ export function knownServers(src: { seen: Seen[]; tools: { name: string; serverN
   const called = new Set<string>() // every folder with a call, any server
   for (const r of src.records) {
     const f = folderOf(r)
+    const shown = (a: Acc) => void (a.since = Math.min(a.since ?? r.startedAt, r.startedAt))
     for (const [wire, n] of Object.entries(r.mcpCalls)) {
       const a = get(wire)
+      shown(a)
       a.isSeen = true
       a.calls.set(f, (a.calls.get(f) ?? 0) + n)
       called.add(nameKey(wire) + '\n' + f)
     }
     for (const [wire, e] of Object.entries(r.base?.mcp ?? {})) {
       const a = get(wire)
+      shown(a)
       a.isSeen = true
       a.withSnap.add(f)
       a.names.label ??= e.label
@@ -177,6 +182,7 @@ export function knownServers(src: { seen: Seen[]; tools: { name: string; serverN
       ...(rule && { rule }),
       ...(a.snap && { tools: a.snap.tools, tokens: a.snap.tokens }),
       calls: [...a.calls].sort((x, y) => y[1] - x[1]),
+      ...(a.since !== undefined && { since: a.since }),
       idleIn: [...a.withSnap].filter((f) => !called.has(key + '\n' + f)),
     })
   }
@@ -193,16 +199,20 @@ const labelOf = (folder: string, folders: string[]): string => {
 
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`
 const num = (x: number) => x.toLocaleString('en-US')
-const periodOf = (h: History, now: number) => `in the last ${plural(Math.min(KEEP_DAYS, Math.floor((now - h.since) / 86_400_000)), 'day')}`
+// A server's history starts at its own first record, or at the global start when that is later.
+const ownStart = (h: History, k: Known, now: number): number => Math.max(h.since, k.since ?? now)
+const periodOf = (start: number, now: number) => `in the last ${plural(Math.min(KEEP_DAYS, Math.floor((now - start) / 86_400_000)), 'day')}`
 
 export type Suggestion = { key: string; name: string; tools?: number; why: string; command: string }
 
 export function suggestionsOf(known: Known[], folders: string[], history: History, now: number): Suggestion[] {
   if (!history.mature) return []
-  const period = periodOf(history, now)
   const out: Suggestion[] = []
   for (const k of known) {
     if (k.rule) continue
+    const start = ownStart(history, k, now)
+    if (now - start < MIN_HISTORY) continue
+    const period = periodOf(start, now)
     const base = { key: k.key, name: k.name, ...(k.tools !== undefined && { tools: k.tools }) }
     if (!k.calls.length) out.push({ ...base, why: `was not called ${period}`, command: `/longhaul mcp ${k.name} off` })
     else if (k.calls.length <= MAX_ONLY_FOLDERS && k.idleIn.length) {
@@ -220,6 +230,7 @@ export type VerbPlan = { rules?: RuleSet; connect: boolean; lines: string[] } //
 
 export const NOT_SAVED = 'The rule could not be saved, so nothing changed. Try the command again.'
 export const NOT_READ = 'The rules could not be read, so nothing changed. Try the command again.'
+export const NO_FOLDER = "This session's folder could not be read, so nothing changed. Try the command again."
 export const STAYS_ON = 'It stays on in this session and is held from the next one. /mcp turns it off now.'
 
 export function resolveServer(known: Known[], typed: string): Known | { error: string } {
@@ -245,7 +256,7 @@ export function planVerb(k: Known, verb: Verb, typed: Typed[], rules: RuleSet, h
   const isHere = !next || matchesFolder(next, folders)
   if (isOn && k.isOn && !isHere) lines.push(STAYS_ON)
   if (!isOn) lines.push(MODE_OFF)
-  const connect = isOn && (verb === 'here' ? !!cur : verb === 'everywhere' || (verb === 'only' && isHere))
+  const connect = isOn && (verb === 'here' || verb === 'everywhere' || (verb === 'only' && isHere))
   if (isKept) return { connect, lines }
   const out = Object.fromEntries(Object.entries(rules).filter(([key]) => nameKey(key) !== nameKey(k.name)))
   if (next) out[k.name] = next
@@ -260,19 +271,21 @@ export function renderList(known: Known[], o: { suggestions: Suggestion[]; folde
   lines.push('MCP servers', '')
   if (!known.length) return [...lines, 'No MCP servers known yet.'].join('\n')
   const hereFolders = [o.here.root, ...(o.here.real ? [o.here.real] : [])]
-  const period = periodOf(o.history, o.now)
-  const since = localDate(o.history.since)
   for (const k of known) {
+    const start = ownStart(o.history, k, o.now)
+    const isMature = o.now - start >= MIN_HISTORY
+    const period = periodOf(start, o.now)
+    const since = localDate(start)
     lines.push(`${k.name}: ${k.tools !== undefined && k.tokens !== undefined ? `${plural(k.tools, 'tool')}, about ${num(k.tokens)} tokens (est.) per session` : 'cost not measured yet'}`)
     if (!k.rule) lines.push('  rule: none, loads everywhere')
     else if (!k.rule.length) lines.push('  rule: off in every folder')
-    else lines.push(`  rule: only ${k.rule.join(', ')}${o.isOn ? (matchesFolder(k.rule, hereFolders) ? ' (loads in this folder)' : ' (held in this folder)') : ''}`)
+    else lines.push(`  rule: only ${k.rule.join(', ')}${o.isOn && o.here.root ? (matchesFolder(k.rule, hereFolders) ? ' (loads in this folder)' : ' (held in this folder)') : ''}`)
     if (!k.isSeen) lines.push(`  not seen in the last ${KEEP_DAYS} days`)
-    else if (!k.calls.length) lines.push(o.history.mature ? `  not called ${period}` : `  no calls recorded since ${since}`)
+    else if (!k.calls.length) lines.push(isMature ? `  not called ${period}` : `  no calls recorded since ${since}`)
     else {
       const shown = k.calls.slice(0, MAX_LISTED_FOLDERS).map(([f, c]) => `${labelOf(f, o.folders)} (${c})`).join(', ')
       const more = k.calls.length - MAX_LISTED_FOLDERS
-      lines.push(`  called ${o.history.mature ? period : `since ${since}`}: ${shown}${more > 0 ? ` and ${more} more` : ''}`)
+      lines.push(`  called ${isMature ? period : `since ${since}`}: ${shown}${more > 0 ? ` and ${more} more` : ''}`)
     }
     const s = o.suggestions.find((x) => x.key === k.key)
     if (s) lines.push(`  suggestion: ${s.command}`)

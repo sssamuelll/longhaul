@@ -1,5 +1,5 @@
 import type { SessionUsage } from 'claude-code'
-import type { SessionRecord } from './ledger'
+import { MIN_HISTORY, type SessionRecord } from './ledger'
 import { localDate } from './budget'
 import { START_CAP } from './session'
 import { nameKey, type Suggestion } from './mcp'
@@ -11,7 +11,6 @@ const BIG_FILE_LINES = 200
 const BIG_FILE_TOKENS = 3000
 export const DUP_TOKENS = 500
 export const NOTICE_TOTAL = 60_000
-const MIN_HISTORY = 3 * DAY // the mod's records must reach back this far before a server counts as unused
 const WIRE = /^mcp__(.+?)__/ // same key as the call counts in register.tsx
 export const NOTICE_EVERY = 7 * DAY
 // Characters per token for tool names and server instructions; measured 2.1 on 2026-11-14 (12,078 characters, 5,749 tokens).

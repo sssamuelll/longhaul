@@ -1,7 +1,8 @@
 import { test, expect } from 'claude-code/testing'
-import { parseCommand, knownServers, suggestionsOf, renderList, MODE_OFF, type Known, type Here, planVerb, resolveServer, connectLine, STAYS_ON, nameKey, normPath, checkPattern, matchesFolder, readRuleSet, findRule, isProtected, holds, holdMessage } from './mcp'
+import { parseCommand, knownServers, suggestionsOf, renderList, MODE_OFF, type Known, type Here, planVerb, resolveServer, connectLine, STAYS_ON, nameKey, normPath, checkPattern, matchesFolder, readRuleSet, findRule, isProtected, holds, holdMessage, NO_FOLDER } from './mcp'
 import { headingKey } from './health'
 import { newRecord, projectOf } from './ledger'
+import { localDate } from './budget'
 import type { BaseSnapshot } from './health'
 
 test('one key for a server however it is spelled', () => {
@@ -20,6 +21,9 @@ test('a name pattern matches between separators, any case', () => {
   expect(matchesFolder(['CLO Compare'], ['D:\\Desktop\\CLO Compare'])).toBe(true)
   expect(matchesFolder(['a.b'], ['D:\\x\\aXb'])).toBe(false) // the pattern is escaped
   expect(matchesFolder([], ['D:\\x'])).toBe(false)
+  expect(matchesFolder([''], ['/w/x'])).toBe(false) // an empty pattern matches nothing
+  expect(matchesFolder([''], ['D:/a//b'])).toBe(false)
+  expect(matchesFolder(['', 'x'], ['/w/x'])).toBe(true)
 })
 
 test('a full path matches that folder and what is under it', () => {
@@ -121,6 +125,7 @@ const rec = (id: string, root: string, calls: Record<string, number>, mcp?: Base
   return r
 }
 const old = { mature: true, since: now - 21 * DAY }
+const SINCE = now - 30 * DAY // a server's own start that leaves the global one in charge
 
 test('the four sources are joined under one name', () => {
   const [h] = knownServers({
@@ -129,7 +134,7 @@ test('the four sources are joined under one name', () => {
     records: [rec('a', 'D:/Desktop/media', { claude_ai_Higgsfield: 41 }, { claude_ai_Higgsfield: { tools: 170, tokens: 5800, loaded: 0 } })],
     rules: { claude_ai_Higgsfield: ['D:/Desktop/media'] },
   })
-  expect(h).toEqual({ key: 'claude_ai_Higgsfield', name: 'claude.ai Higgsfield', isOn: false, isSeen: true, rule: ['D:/Desktop/media'], tools: 170, tokens: 5800, calls: [['D:/Desktop/media', 41]], idleIn: [] })
+  expect(h).toEqual({ key: 'claude_ai_Higgsfield', name: 'claude.ai Higgsfield', isOn: false, isSeen: true, rule: ['D:/Desktop/media'], tools: 170, tokens: 5800, calls: [['D:/Desktop/media', 41]], idleIn: [], since: now - 5 * DAY })
 })
 
 test('a server is known from any one source', () => {
@@ -152,8 +157,38 @@ test('cost comes from the newest snapshot, folders from every record', () => {
   expect(k.idleIn).toEqual(['D:/p/vina'])
 })
 
+test("a server's own start is its oldest record that shows it", () => {
+  const a = { ...rec('a', 'D:/p/a', { kicad: 1 }), startedAt: now - 9 * DAY }
+  const b = { ...rec('b', 'D:/p/b', {}, { kicad: { tools: 1, tokens: 1 } }), startedAt: now - 12 * DAY }
+  const c = { ...rec('c', 'D:/p/c', { other: 1 }), startedAt: now - 20 * DAY }
+  const by = (src: object) => Object.fromEntries(knownServers({ seen: [], tools: [], records: [a, b, c], rules: {}, ...src }).map((k) => [k.key, k.since]))
+  expect(by({})).toEqual({ kicad: now - 12 * DAY, other: now - 20 * DAY })
+  const k = by({ seen: [{ name: 's', isHeld: false }], tools: [{ name: 'mcp__t__x', serverName: 't' }], records: [c], rules: { r: ['x'] } })
+  expect(k.s).toBe(undefined)
+  expect(k.t).toBe(undefined)
+  expect(k.r).toBe(undefined)
+  expect(Object.keys(k)).toEqual(expect.arrayContaining(['s', 't', 'r']))
+})
+
+test("a suggestion counts the server's own history", () => {
+  const k = (since?: number): Known => ({ key: 'kicad', name: 'kicad', isOn: true, isSeen: true, calls: [], idleIn: [], ...(since !== undefined && { since }) })
+  const s = (x: Known) => suggestionsOf([x], [], old, now)
+  expect(s(k(now))).toEqual([])
+  expect(s(k())).toEqual([])
+  expect(s(k(now - 5 * DAY))[0].why).toBe('was not called in the last 5 days')
+  expect(s(k(now - 30 * DAY))[0].why).toBe('was not called in the last 21 days')
+})
+
+test("a young server's list line says since when, with no suggestion", () => {
+  const k: Known = { key: 'kicad', name: 'kicad', isOn: true, isSeen: true, calls: [], idleIn: [], since: now }
+  const folders: string[] = []
+  const text = renderList([k], { suggestions: suggestionsOf([k], folders, old, now), folders, here: { root: '/w/x' }, isOn: true, history: old, now })
+  expect(text).toContain(`  no calls recorded since ${localDate(now)}`)
+  expect(text).not.toContain('  suggestion:')
+})
+
 test('a suggestion is off, only, or nothing', () => {
-  const base = { isOn: true, isSeen: true, idleIn: [] as string[], calls: [] as [string, number][] }
+  const base = { isOn: true, isSeen: true, idleIn: [] as string[], calls: [] as [string, number][], since: SINCE }
   const folders = ['D:/p/sam17', 'D:/p/vina', 'D:/a/vina', 'D:/b/vina-bake', 'D:/Desktop/CLO Compare']
   const s = (k: object, h = old) => suggestionsOf([{ key: 'kicad', name: 'kicad', tools: 60, ...base, ...k } as never], folders, h, now)
   expect(s({})).toEqual([{ key: 'kicad', name: 'kicad', tools: 60, why: 'was not called in the last 21 days', command: '/longhaul mcp kicad off' }])
@@ -169,8 +204,8 @@ test('a suggestion is off, only, or nothing', () => {
 
 test('the list, as the design shows it', () => {
   const known: Known[] = [
-    { key: 'claude_ai_Higgsfield', name: 'claude.ai Higgsfield', isOn: false, isSeen: true, rule: ['D:/Desktop/media'], tools: 170, tokens: 5800, calls: [['D:/Desktop/media', 41]], idleIn: [] },
-    { key: 'blender', name: 'blender', isOn: true, isSeen: true, tools: 10, tokens: 1400, calls: [], idleIn: ['D:/Desktop/projects/vina'] },
+    { key: 'claude_ai_Higgsfield', name: 'claude.ai Higgsfield', isOn: false, isSeen: true, rule: ['D:/Desktop/media'], tools: 170, tokens: 5800, calls: [['D:/Desktop/media', 41]], idleIn: [], since: SINCE },
+    { key: 'blender', name: 'blender', isOn: true, isSeen: true, tools: 10, tokens: 1400, calls: [], idleIn: ['D:/Desktop/projects/vina'], since: SINCE },
   ]
   const folders = ['D:/Desktop/media', 'D:/Desktop/projects/vina']
   const o = { suggestions: suggestionsOf(known, folders, old, now), folders, here: { root: 'D:\\Desktop\\projects\\vina' }, isOn: true, history: old, now }
@@ -192,9 +227,16 @@ test('the list, as the design shows it', () => {
   expect(renderList(known, { ...o, isOn: false })).toContain('  rule: only D:/Desktop/media\n')
 })
 
+test('the list has no folder label when the folder is unknown', () => {
+  const k: Known = { key: 'a', name: 'a', isOn: true, isSeen: true, rule: ['a'], calls: [], idleIn: [], since: SINCE }
+  const text = renderList([k], { suggestions: [], folders: [], here: { root: '' }, isOn: true, history: old, now })
+  expect(text).toContain('  rule: only a\n')
+  expect(text).not.toContain('this folder')
+})
+
 test('the list says what it does not know', () => {
   const o = { suggestions: [], folders: [], here: { root: 'D:\\x' }, isOn: true, history: old, now }
-  const ghost: Known = { key: 'ghost', name: 'ghost', isOn: false, isSeen: false, rule: [], calls: [], idleIn: [] }
+  const ghost: Known = { key: 'ghost', name: 'ghost', isOn: false, isSeen: false, rule: [], calls: [], idleIn: [], since: SINCE }
   expect(renderList([ghost], o)).toBe(['MCP servers', '', 'ghost: cost not measured yet', '  rule: off in every folder', '  not seen in the last 21 days'].join('\n'))
   const busy: Known = { ...ghost, isSeen: true, rule: undefined, calls: [['a', 6], ['b', 5], ['c', 4], ['d', 3], ['e', 2], ['f', 1], ['g', 1]] }
   expect(renderList([busy], o)).toContain('  called in the last 21 days: a (6), b (5), c (4), d (3), e (2) and 2 more')
@@ -219,7 +261,8 @@ test('only replaces the rule and connects when this folder matches', () => {
 })
 
 test('here adds this folder, by its real path, unless a pattern already matches', () => {
-  expect(planVerb(kn(), 'here', [], {}, vina, true)).toEqual({ connect: false, lines: ['kicad has no rule and loads everywhere.'] })
+  expect(planVerb(kn(), 'here', [], {}, vina, true)).toEqual({ connect: true, lines: ['kicad has no rule and loads everywhere.'] })
+  expect(planVerb(kn(), 'here', [], {}, vina, false)).toMatchObject({ connect: false })
   expect(planVerb(kn({ rule: ['sam17'] }), 'here', [], { kicad: ['sam17'] }, vina, true)).toEqual({ rules: { kicad: ['sam17', 'D:/Desktop/projects/vina'] }, connect: true, lines: ['kicad loads only in sam17, D:/Desktop/projects/vina.'] })
   expect(planVerb(kn({ rule: ['sam17'] }), 'here', [], { kicad: ['sam17'] }, { root: 'D:\\w\\x\\' }, true).rules).toEqual({ kicad: ['sam17', 'D:/w/x'] })
   expect(planVerb(kn({ rule: ['vina'] }), 'here', [], { kicad: ['vina'] }, vina, true)).toEqual({ connect: true, lines: ['kicad loads only in vina.'] })
@@ -502,4 +545,32 @@ test('health has no such line when no rule is stored', async ($, on) => {
   await start($)
   await turn($)
   expect(((await run($, 'health')) as any).text).not.toContain('Rules are saved but not applied')
+})
+
+test('here on a server with no rule asks for the connection and saves nothing', ON, async ($, on) => {
+  const s = stub(on, { id: 'h20', root: '/w/h20', breakdown: tool('h20') })
+  await start($)
+  const r: any = await run($, 'mcp h20 here')
+  expect(s.store.has('mcp:rules')).toBe(false)
+  expect(s.asked.map((e) => e.server)).toEqual(['h20'])
+  expect(r.text).toBe('h20 has no rule and loads everywhere.\nIt is on in this session.')
+})
+
+test('only with a pattern that matches this folder saves the rule and connects', ON, async ($, on) => {
+  const s = stub(on, { id: 'h21', root: '/w/h21', breakdown: tool('h21') })
+  await start($)
+  const r: any = await run($, 'mcp h21 only h21')
+  expect(rules(s)).toEqual({ h21: ['h21'] })
+  expect(s.asked.map((e) => e.server)).toEqual(['h21'])
+  expect(r.text.split('\n')[1]).toBe('It is on in this session.')
+})
+
+test('an unknown session folder holds nothing and saves nothing', ON, async ($, on) => {
+  const s = stub(on, { id: 'h22', root: '', cwd: '', frozen: true, store: new Map([['mcp:rules', { h22: ['elsewhere'] }]]) })
+  await start($)
+  const r: any = await run($, 'mcp h22 everywhere')
+  expect(s.asked.map((e) => e.server)).toEqual(['h22']) // the hook passed it on
+  expect(r.text).toContain('It is on in this session.')
+  expect(((await run($, 'mcp h22 here')) as any).text).toBe(NO_FOLDER)
+  expect(rules(s)).toEqual({ h22: ['elsewhere'] })
 })

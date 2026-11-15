@@ -12,7 +12,7 @@ import { buildReport, renderText, windowOf, type ReportData } from './report'
 import { NOTICE_TOTAL, NOTICE_EVERY, DUP_TOKENS, instructionParts, snapshotOf, unusedOf, addCalls, historyOf, healthAdvice, renderHealth, type BaseSnapshot } from './health'
 import { DEFAULT_RULES, parseRules, takeRulesWarn, type Rule } from './rules'
 import type { History } from './health'
-import { parseCommand, HELP, normPath, RULES_KEY, readRuleSet, findRule, isProtected, holds, holdMessage, checkPattern, noteSeen, seenServers, knownServers, foldersOf, suggestionsOf, MODE_OFF, renderList, resolveServer, planVerb, connectLine, NOT_SAVED, NOT_READ, type Command, type Here, type RuleSet, type Known, type Typed } from './mcp'
+import { parseCommand, HELP, normPath, RULES_KEY, readRuleSet, findRule, isProtected, holds, holdMessage, checkPattern, noteSeen, seenServers, knownServers, foldersOf, suggestionsOf, MODE_OFF, renderList, resolveServer, planVerb, connectLine, NOT_SAVED, NOT_READ, NO_FOLDER, type Command, type Here, type RuleSet, type Known, type Typed } from './mcp'
 import { classify } from './classifier'
 import { HANDOFF, ASK_HANDOFF, SUBAGENT_NOTE, REVIEW_TOOL, OUTCOMES, isExpensiveMain, noteEdit, applyReview, ageDecisions, getRules, setRules, clearMainEdited, resetHandoff } from './handoff'
 
@@ -101,13 +101,21 @@ async function statReal($: EngineInterface, path: string): Promise<string | unde
 }
 
 // One lookup per distinct root, shared by raises that arrive together.
+// ponytail: a failed lookup is cached until the process ends; retry on failure if a folder is ever compared by the wrong spelling
 const realPaths = new Map<string, Promise<string | undefined>>()
 
-async function sessionFolders($: EngineInterface): Promise<Here> {
+async function folderLookup($: EngineInterface): Promise<Here> {
   const root = await rootOf($)
   let p = realPaths.get(root)
   if (!p) realPaths.set(root, (p = statReal($, root)))
   return { root, real: await p }
+}
+
+// For the MCP rules: an unknown folder throws, so the hook passes the server on and gather falls back to an empty root.
+async function sessionFolders($: EngineInterface): Promise<Here> {
+  const here = await folderLookup($)
+  if (!here.root) throw new Error('the session folder is unknown')
+  return here
 }
 
 async function loadRecord($: EngineInterface, id: string, project: string, now: number, root: string): Promise<SessionRecord> {
@@ -148,7 +156,7 @@ async function listRecords($: EngineInterface, sinceMs: number): Promise<Session
 
 async function switchTo($: EngineInterface, old: SessionRecord | null, id: string): Promise<SessionRecord> {
   if (old) await saveRecord($, old) // nothing in memory is discarded
-  const { root, real } = await sessionFolders($)
+  const { root, real } = await folderLookup($)
   let now = Date.now()
   try {
     now = await $.clock.now()
@@ -404,7 +412,7 @@ async function runHealth($: EngineInterface, cfg: Config): Promise<{ text: strin
   if (!pick?.base) return { text: "No snapshot yet: it's taken after the first reply of a session." }
   const calls = addCalls(week)
   const history = historyOf(week, now)
-  const g = await gather($)
+  const g = await gather($) // ponytail: lists the records a second time, after weekRecords
   const suggestions = g.rules ? suggestionsOf(g.known, foldersOf(g.records), g.history, g.now) : []
   const note = cfg.mcpMode === 'off' && g.rules && Object.keys(g.rules).length ? MODE_OFF : undefined
   return { text: `Snapshot from project ${pick.project}.\n\n${renderHealth(pick.base, healthAdvice(pick.base, suggestions, note), calls, history)}` }
@@ -483,6 +491,7 @@ async function runMcp($: EngineInterface, cfg: Config, cmd: Command): Promise<{ 
   }
   const k = resolveServer(g.known, cmd.server)
   if ('error' in k) return { text: k.error }
+  if (cmd.verb === 'here' && !g.here.root) return { text: NO_FOLDER }
   const typed: Typed[] = []
   if (cmd.verb === 'only') {
     const checked = cmd.patterns.map(checkPattern)

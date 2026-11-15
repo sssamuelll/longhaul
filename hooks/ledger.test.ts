@@ -1,5 +1,5 @@
 import { test, expect } from 'claude-code/testing'
-import { MAX_RATE, addStep, newRecord, totalCost, type SessionRecord } from './ledger'
+import { MAX_RATE, addStep, newRecord, parse, totalCost, type SessionRecord } from './ledger'
 
 const near = (a: number, b: number) => expect(Math.abs(a - b) < 1e-9).toBe(true)
 const u = (o: object) => ({ input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, ...o })
@@ -152,4 +152,12 @@ test('an old record without a compaction log loads with an empty one', async ($,
 test('a record keeps the folder it was started in, when given', () => {
   expect(newRecord('a', 'vina', 1, 'D:/Desktop/projects/vina').root).toBe('D:/Desktop/projects/vina')
   expect('root' in newRecord('a', 'vina', 1)).toBe(false)
+})
+
+test('a stored record keeps a string root and takes the fresh one otherwise', () => {
+  const fresh = newRecord('s', 'p', 1, '/fresh')
+  const base = { v: 1, id: 's' }
+  expect(parse({ ...base, root: 5 }, fresh)?.root).toBe('/fresh')
+  expect(parse({ ...base, root: '/mine' }, fresh)?.root).toBe('/mine')
+  expect(parse(base, fresh)?.root).toBe('/fresh')
 })
