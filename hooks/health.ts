@@ -162,7 +162,7 @@ export function healthAdvice(snap: BaseSnapshot, calls: Record<string, number>, 
 export function renderHealth(snap: BaseSnapshot, advice: Advice[], calls: Record<string, number> = {}, history?: History): string {
   const items: [number, string][] = []
   for (const [s, v] of Object.entries(snap.mcp))
-    items.push([v.tokens, `${nameOf(s, v.label)} MCP: ${plural(v.tools, 'tool')}, ${n(v.tokens)} tokens ${EST}, ${calls[s] > 0 ? 'used this week' : history && !history.mature ? `no calls recorded since ${localDate(history.since)}` : 'not used this week'}`])
+    items.push([v.tokens, `${nameOf(s, v.label)} MCP: ${v.loaded === 0 ? `${plural(v.tools, 'tool')} (on demand)` : v.loaded === undefined ? plural(v.tools, 'tool') : `${plural(v.tools, 'tool')} (${v.loaded} loaded)`}, ${n(v.tokens)} tokens ${EST}, ${calls[s] > 0 ? 'used this week' : history && !history.mature ? `no calls recorded since ${localDate(history.since)}` : 'not used this week'}`])
   for (const m of snap.memory) items.push([m.tokens, `${m.path}: ${m.lines === undefined ? '' : `${plural(m.lines, 'line')}, `}${n(m.tokens)} tokens ${EST}`])
   if (snap.skills.count) items.push([snap.skills.tokens, `skills: ${snap.skills.count} listed, ${n(snap.skills.tokens)} tokens ${EST}`])
   const d = snap.duplicate
@@ -171,7 +171,7 @@ export function renderHealth(snap: BaseSnapshot, advice: Advice[], calls: Record
   return [
     'Context health',
     '',
-    `Sessions start at ${n(snap.total)} tokens ${EST}${snap.afterFirstReply ? ', counted after the first reply' : ''}. What loads before any work:`,
+    `Sessions start at ${n(snap.total)} tokens ${EST}${snap.afterFirstReply ? ', counted after the first reply' : ''}${snap.measured ? `; the first request measured ${n(snap.measured)}` : ''}. What loads before any work:`,
     ...items.map(([, t]) => `- ${t}`),
     '',
     'Advice',

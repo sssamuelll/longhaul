@@ -494,3 +494,31 @@ test('snapshotOf adds instructions at 2 characters per token, found by the /mcp 
   const d = snapshotOf(bd({ mcpTools: docs }) as never, new Map(), 1, { instructions: [['claude.ai Docs', 1000]] })
   expect(d.mcp.claude_ai_Docs).toEqual({ tools: 1, tokens: 1000, label: 'claude.ai Docs' }) // 500 + 1000 / 2
 })
+
+test('renderHealth marks on-demand servers and shows the measured start', async () => {
+  const s = snap({
+    mcp: { lazy: { tools: 170, tokens: 6040, loaded: 0 }, mixed: { tools: 40, tokens: 9000, loaded: 12 }, github: { tools: 30, tokens: 25_000 } },
+    measured: 68_400,
+  })
+  const adv = healthAdvice(s, { github: 1 })
+  const out = renderHealth(s, adv, { github: 1 })
+  expect(out).toContain('lazy MCP: 170 tools (on demand), 6,040 tokens (est.), not used this week')
+  expect(out).toContain('mixed MCP: 40 tools (12 loaded), 9,000 tokens (est.), not used this week')
+  expect(out).toContain('github MCP: 30 tools, 25,000 tokens (est.), used this week')
+  expect(out).toContain('Sessions start at 93,000 tokens (est.); the first request measured 68,400. What loads before any work:')
+  expect(adv.map((a) => a.text).join('\n')).toContain('lazy has 170 tools, about 6,040 tokens (est.) in every session, and was not used this week')
+})
+
+test('renderHealth: a snapshot stored before this change reads as before', async () => {
+  const out = renderHealth(snap(), healthAdvice(snap(), { github: 3 }), { github: 3 })
+  expect(out).toContain('Sessions start at 93,000 tokens (est.). What loads before any work:')
+  expect(out).toContain('github MCP: 30 tools, 25,000 tokens (est.), used this week')
+  expect(out).not.toContain('measured')
+  expect(out).not.toContain('on demand')
+  expect(out).not.toContain('loaded')
+})
+
+test('renderHealth puts the measured start after the first-reply note', async () => {
+  const s = snap({ afterFirstReply: true, measured: 68_400 })
+  expect(renderHealth(s, [])).toContain('93,000 tokens (est.), counted after the first reply; the first request measured 68,400. What loads')
+})
