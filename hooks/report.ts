@@ -119,13 +119,14 @@ export function buildReport(
   // only meter readings inside the week feed the measured figures, as for the headline
   const inside = week.map((r) => ({ ...r, rate: r.rate.filter(([at]) => at >= start && at < end) }))
   const shares = measuredShares(inside)
-  const inWindow = inside.flatMap((r) => r.rate.map(([, p]) => p))
+  // by time: the meter can drop inside the week while resetsAt stays the same
+  const inWindow = inside.flatMap((r) => r.rate).sort((a, b) => a[0] - b[0])
   const measuredTotal = Object.values(shares).reduce((s, x) => s + x.percent, 0)
   const sections: Section[] = []
 
   const head: Line[] = []
   if (inWindow.length) {
-    const latest = Math.max(...inWindow)
+    const latest = inWindow[inWindow.length - 1][1]
     head.push({ kind: 'text', text: `Used ${Math.floor(latest)}% of the weekly limit${resetsAt !== null ? `, resets ${stamp(resetsAt)}` : ''}.` })
   } else head.push({ kind: 'text', text: 'Weekly figures need a Pro or Max plan.' })
   head.push({ kind: 'text', text: `About ${money(total)} at API prices across ${plural(week.length, 'session')} (an equivalent, not a bill)${EST}` })
