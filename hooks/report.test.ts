@@ -167,6 +167,15 @@ test('measured figures use only meter readings inside the week', async () => {
   expect(out).toContain('Used 36% of the weekly limit')
 })
 
+test('the headline is the latest reading when the meter drops inside the week', async () => {
+  // the account's meter can fall back mid-week while resetsAt stays the same (100 → 2, then 59 → 10)
+  const at = (d: number) => resets - d * DAY
+  const a = mk('A', { rate: [[at(4), 100, 1], [at(3.5), 2, 2]], weekResetsAt: new Date(resets).toISOString() })
+  const b = mk('B', { rate: [[at(3), 59, 3], [at(2), 10, 4]], weekResetsAt: new Date(resets).toISOString() })
+  const out = renderText(buildReport([b, a], now, []))
+  expect(out).toContain('Used 10% of the weekly limit')
+})
+
 test('a fresh install, with no records, does not suggest MCP commands', async () => {
   const out = renderText(buildReport([], now, sug))
   expect(out).not.toContain('/longhaul mcp')
